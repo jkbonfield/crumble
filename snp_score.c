@@ -26,17 +26,30 @@
  */
 
 
-#define INDEL_DIST 40
-#define QL 3
+//#define INDEL_DIST 40
+#define QL 10
 #define QM 25 // below => QL, else QH
-#define QH 42
+#define QH 40
 #define M 0
 
-//#define STR_DIST 2
-#define STR_DIST 1
+// Whether to reduce quality on mismatching bases (ie QL)
+#define REDUCE_QUAL 1
 
-#define MIN_QUAL 75
-#define MIN_INDEL 100
+#define STR_DIST 2
+//#define STR_DIST 1
+
+// Standard gap5 algorithm; set MIN_QUAL_A to 0 to disable
+#define MIN_QUAL_A 75
+#define MIN_INDEL_A 150
+#define MIN_DISCREP_A 1.0
+
+// With mqual adjustment; set MIN_QUAL_B to 0 to disable
+#define MIN_QUAL_B 75
+#define MIN_INDEL_B 150
+#define MIN_DISCREP_B 1.0
+
+// Extra growth to expand indel qual region +/- by SCALE.
+#define INDEL_SCALE 1.1
 
 //#define MIN_QUAL 30
 //#define MIN_INDEL 50
@@ -860,27 +873,27 @@ int ref2query_pos(bam1_t *b, int pos) {
 //     }
 // }
 
-// Masks any base within D bases of a soft-clip. Hard too?
-void mask_clips(bam1_t *b) {
-    uint32_t *cig = bam_get_cigar(b);
-    int i, n = b->core.n_cigar, q;
-
-    for (i = q = 0; i < n; i++) {
-	int op = bam_cigar_op(cig[i]);
-	int oplen = bam_cigar_oplen(cig[i]);
-
-	if (op == BAM_CSOFT_CLIP) {
-	    uint8_t *qual = bam_get_qual(b);
-	    int x, x_s = q-INDEL_DIST, x_e = q+oplen+INDEL_DIST;
-	    if (x_s < 0) x_s = 0;
-	    if (x_e > b->core.l_qseq) x_e = b->core.l_qseq;
-	    for (x = x_s; x < x_e; x++)
-		qual[x] |= 0x80;
-	}
-	if (bam_cigar_type(op) & 1)
-	    q += oplen;
-    }
-}
+// // Masks any base within D bases of a soft-clip. Hard too?
+// void mask_clips(bam1_t *b) {
+//     uint32_t *cig = bam_get_cigar(b);
+//     int i, n = b->core.n_cigar, q;
+// 
+//     for (i = q = 0; i < n; i++) {
+// 	int op = bam_cigar_op(cig[i]);
+// 	int oplen = bam_cigar_oplen(cig[i]);
+// 
+// 	if (op == BAM_CSOFT_CLIP) {
+// 	    uint8_t *qual = bam_get_qual(b);
+// 	    int x, x_s = q-INDEL_DIST, x_e = q+oplen+INDEL_DIST;
+// 	    if (x_s < 0) x_s = 0;
+// 	    if (x_e > b->core.l_qseq) x_e = b->core.l_qseq;
+// 	    for (x = x_s; x < x_e; x++)
+// 		qual[x] |= 0x80;
+// 	}
+// 	if (bam_cigar_type(op) & 1)
+// 	    q += oplen;
+//     }
+// }
 
 // Extend min/max reference positions based on any STRs at apos/rpos (abs/rel)
 // into seq b.  This is used to find the extents over which we may wish to
@@ -1043,43 +1056,57 @@ int main(int argc, char **argv) {
 	}
 
 	consensus_t cons_g5_A, cons_g5_B;
-	calculate_consensus_pileup(CONS_ALL,
-				   plp, n_plp, &cons_g5_A);
-	calculate_consensus_pileup(CONS_ALL | CONS_MQUAL,
-				   plp, n_plp, &cons_g5_B);
+	int call1, call2; // samtools numerical =ACMGRSVTWYHKDBN
+
+	if (MIN_QUAL_A != 0) {
+	    calculate_consensus_pileup(CONS_ALL,
+				       plp, n_plp, &cons_g5_A);
+	    if (cons_g5_A.scores[6] > 0) {
+		call1 = 1<<(cons_g5_A.het_call / 5);
+		call2 = 1<<(cons_g5_A.het_call % 5);
+	    } else {
+		call1 = call2 = 1<<cons_g5_A.call;
+	    }
+	}
+
+	if (MIN_QUAL_B != 0) {
+	    calculate_consensus_pileup(CONS_ALL | CONS_MQUAL,
+				       plp, n_plp, &cons_g5_B);
+	    if (cons_g5_B.scores[6] > 0) {
+		call1 = 1<<(cons_g5_B.het_call / 5);
+		call2 = 1<<(cons_g5_B.het_call % 5);
+	    } else {
+		call1 = call2 = 1<<cons_g5_B.call;
+	    }
+	}
 
 #ifdef DEBUG
 	printf("Depth %d\t%d\t%d\t", tid, pos+1, n_plp);
 #endif
-	int call1, call2; // samtools numerical =ACMGRSVTWYHKDBN
-
-	if (cons_g5_A.scores[6] > 0) {
-	    call1 = 1<<(cons_g5_A.het_call / 5);
-	    call2 = 1<<(cons_g5_A.het_call % 5);
-	} else {
-	    call1 = call2 = 1<<cons_g5_A.call;
-	}
 
 #ifdef DEBUG
-	if (cons_g5_A.scores[6] > 0) {
-	    printf("%c/%c %4d\t",
-	    	   "ACGT*"[cons_g5_A.het_call / 5], "ACGT*"[cons_g5_A.het_call % 5],
-	    	   (int)cons_g5_A.scores[6]);
-	} else {
-	    printf("%c   %4d\t",
-	    	   "ACGT*N"[cons_g5_A.call],
-	    	   cons_g5_A.phred);
-	    call1 = call2 = 1<<cons_g5_A.call;
+	if (MIN_QUAL_A != 0) {
+	    if (cons_g5_A.scores[6] > 0) {
+		printf("%c/%c %4d\t",
+		       "ACGT*"[cons_g5_A.het_call / 5], "ACGT*"[cons_g5_A.het_call % 5],
+		       (int)cons_g5_A.scores[6]);
+	    } else {
+		printf("%c   %4d\t",
+		       "ACGT*N"[cons_g5_A.call],
+		       cons_g5_A.phred);
+	    }
 	}
 
-	if (cons_g5_B.scores[6] > 0) {
-	    printf("%c/%c %4d\t",
-		   "ACGT*"[cons_g5_B.het_call / 5], "ACGT*"[cons_g5_B.het_call % 5],
-		   (int)cons_g5_B.scores[6]);
-	} else {
-	    printf("%c   %4d\t",
-		   "ACGT*N"[cons_g5_B.call],
-		   cons_g5_B.phred);
+	if (MIN_QUAL_B != 0) {
+	    if (cons_g5_B.scores[6] > 0) {
+		printf("%c/%c %4d\t",
+		       "ACGT*"[cons_g5_B.het_call / 5], "ACGT*"[cons_g5_B.het_call % 5],
+		       (int)cons_g5_B.scores[6]);
+	    } else {
+		printf("%c   %4d\t",
+		       "ACGT*N"[cons_g5_B.call],
+		       cons_g5_B.phred);
+	    }
 	}
 #endif
 
@@ -1095,8 +1122,11 @@ int main(int argc, char **argv) {
 	int sB = cons_g5_B.scores[6] > 0
 	    ? cons_g5_B.scores[6]
 	    : cons_g5_B.phred;
-	preserve = (hA != hB || sA < MIN_QUAL || sB < MIN_QUAL);
-	preserve |= cons_g5_A.discrep >= 1 || cons_g5_B.discrep >= 1;
+	preserve = ((MIN_QUAL_A && MIN_QUAL_B && hA != hB) ||
+		    (MIN_QUAL_A && sA < MIN_QUAL_A) ||
+		    (MIN_QUAL_B && sB < MIN_QUAL_B));
+	preserve |= ((MIN_QUAL_A && cons_g5_A.discrep >= MIN_DISCREP_A) ||
+		     (MIN_QUAL_B && cons_g5_B.discrep >= MIN_DISCREP_B));
 
 #ifdef DEBUG
 	if (preserve) {
@@ -1113,7 +1143,8 @@ int main(int argc, char **argv) {
 	    // store the indel quals if the indel could be heterozygous or
 	    // a homozygous indel.
 	    if ((plp[i].indel || plp[i].is_del)
-		&& (sA < MIN_INDEL || sB < MIN_INDEL)) {
+		&& ((MIN_QUAL_A && sA < MIN_INDEL_A) ||
+		    (MIN_QUAL_B && sB < MIN_INDEL_B))) {
 		if (indel < ABS(plp[i].indel) + plp[i].is_del)
 		    indel = ABS(plp[i].indel) + plp[i].is_del;
 
@@ -1123,8 +1154,8 @@ int main(int argc, char **argv) {
 		if (max_pos < pos) max_pos = pos;
 
 		// Extra growth, paranoia.
-		//min_pos2 = pos - (pos-min_pos)*1.1;
-		//max_pos2 = pos + (max_pos-pos)*1.1;
+		min_pos2 = pos - (pos-min_pos)*INDEL_SCALE;
+		max_pos2 = pos + (max_pos-pos)*INDEL_SCALE;
 	    }
 
 	    //if (min_pos != INT_MAX || indel)
@@ -1217,7 +1248,8 @@ int main(int argc, char **argv) {
 	    if (!(*qual & 0x80)) {
 		if (base == call1 || base == call2)
 		    *qual = QH;
-		else
+		    //*qual = bin2[*qual];
+		else if (REDUCE_QUAL)
 		    //*qual = QL;
 		    *qual = bin2[*qual];
 	    }
