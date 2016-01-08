@@ -197,3 +197,345 @@ pairs are mapped to the same location.
 -----------------------------------------------------------------------------
 
 chr20_lossy.3: As above, but now with min_qual < 50 instead of < 100.
+
+-----------------------------------------------------------------------------
+
+chr20_lossy.6: current snp_score as of 8th Jan 2016
+
+#define QL 10
+#define QM 25 // below => QL, else QH
+#define QH 40
+#define M 0
+
+// Whether to reduce quality on mismatching bases (ie QL)
+#define REDUCE_QUAL 1
+
+#define STR_DIST 2
+
+// Standard gap5 algorithm; set MIN_QUAL_A to 0 to disable
+#define MIN_QUAL_A 30
+#define MIN_INDEL_A 50
+#define MIN_DISCREP_A 2.0
+
+// With mqual adjustment; set MIN_QUAL_B to 0 to disable
+#define MIN_QUAL_B 75
+#define MIN_INDEL_B 150
+#define MIN_DISCREP_B 1.0
+
+
+@ seq3a[scratch01/jkb]; cram_size 13502_7_chr20_lossy.6.cram | grep QS
+Block content_id      12, total size   37050254     R QS
+
+@ seq3a[scratch01/jkb]; cram_size 13502_7_chr20_orig.cram | grep QS
+Block content_id      12, total size  482056158     R QS
+
+
+Orig vs new:
+Freebayes SNPs   99.97% precision  99.94% recall
+Freebayes Indel  99.99% precision  99.89% recall
+
+Orig vs Platinum Genomes:
+Freebayes SNPs   93.01% precision  91.11% recall
+Freebayes Indel	 77.34% precision  72.77% recall
+
+Lossy vs Platinum Genomes:
+Freebayes SNPs   93.03% precision  91.11% recall
+Freebayes Indel	 77.34% precision  72.77% recall
+
+Absolute terms, from orig -> lossy
+SNPS:  -19 false positive, -1 false negative
+Indel:  -7 false positive, +7 false negative
+
+ID      0       13502_7_chr20_orig.bam.freebayes.norm.vcf.gz
+ID      1       13502_7_chr20_lossy.6.cram.freebayes.norm.vcf.gz
+ID      2       13502_7_chr20_orig.bam.freebayes.norm.vcf.gz    13502_7_chr20_lossy.6.cram.freebayes.norm.vcf.gz
+# SN, Summary numbers:
+# SN    [2]id   [3]key  [4]value
+SN      0       number of samples:      1
+SN      1       number of samples:      1
+SN      0       number of records:      58
+SN      0       number of no-ALTs:      0
+SN      0       number of SNPs: 37
+SN      0       number of MNPs: 8
+SN      0       number of indels:       16
+SN      0       number of others:       0
+SN      0       number of multiallelic sites:   6
+SN      0       number of multiallelic SNP sites:       1
+SN      1       number of records:      26
+SN      1       number of no-ALTs:      0
+SN      1       number of SNPs: 22
+SN      1       number of MNPs: 5
+SN      1       number of indels:       2
+SN      1       number of others:       0
+SN      1       number of multiallelic sites:   3
+SN      1       number of multiallelic SNP sites:       0
+SN      2       number of records:      91877
+SN      2       number of no-ALTs:      0
+SN      2       number of SNPs: 75949
+SN      2       number of MNPs: 1813
+SN      2       number of indels:       13977
+SN      2       number of others:       756
+SN      2       number of multiallelic sites:   1265
+SN      2       number of multiallelic SNP sites:       12
+# QUAL, Stats by quality:
+# QUAL  [2]id   [3]Quality      [4]number of SNPs       [5]number of transitions (1st ALT)      [6]number of transversions (1st ALT)    [7]number of indels
+QUAL    0       0       27      8       19      0
+QUAL    0       1       2       1       1       0
+QUAL    0       6       1       0       1       0
+QUAL    0       10      1       1       0       0
+QUAL    0       14      1       0       1       0
+QUAL    0       16      1       1       0       0
+QUAL    0       83      0       0       0       1
+QUAL    0       84      0       0       0       1
+QUAL    0       122     0       0       0       1
+QUAL    0       133     0       0       0       1
+QUAL    0       143     1       0       1       0
+QUAL    0       150     0       0       0       1
+QUAL    0       157     0       0       0       1
+QUAL    0       167     0       0       0       1
+QUAL    0       184     0       0       0       1
+QUAL    0       286     0       0       0       1
+QUAL    0       288     0       0       0       1
+QUAL    0       328     0       0       0       1
+QUAL    0       339     0       0       0       1
+QUAL    0       355     1       0       0       1
+QUAL    0       400     1       0       0       1
+QUAL    0       409     0       0       0       1
+QUAL    0       464     1       0       0       1
+QUAL    1       0       10      4       6       0
+QUAL    1       2       1       0       1       0
+QUAL    1       3       1       0       1       0
+QUAL    1       17      1       1       0       0
+QUAL    1       25      1       0       1       0
+QUAL    1       44      1       1       0       0
+QUAL    1       57      1       0       1       0
+QUAL    1       179     1       0       0       0
+QUAL    1       217     0       0       0       1
+QUAL    1       268     1       0       0       0
+QUAL    1       314     1       1       0       0
+QUAL    1       336     1       1       0       0
+QUAL    1       355     1       0       0       0
+QUAL    1       368     1       1       0       0
+QUAL    1       395     0       0       0       1
+
+bcftools isec to find true calls on the lossless set that are no
+longer called by the lossy set...  isec plat orig, isec plat lossy,
+isec orig/3 lossy/3.
+
+/tmp/_isec/0000.vcf	for records private to	/tmp/_lossy/0003.vcf.gz
+/tmp/_isec/0001.vcf	for records private to	/tmp/_orig/0003.vcf.gz
+
+Lost correct calls:
+@ seq3a[scratch01/jkb]; egrep -v '^#' /tmp/_isec/0001.vcf|cut -c 1-60
+20	2052937	.	T	TA	84.3078	.	AB=0.291667;ABP=12.0581;AC=1;AF=
+20	4987594	.	C	CGT	167.933	.	AB=0.25;ABP=20.3821;AC=1;AF=0.5
+20	11323168	.	T	TTGTGTGTG	83.2128	.	AB=0.26087;ABP=14.4341;A
+20	16720550	.	A	AT	133.113	.	AB=0.24;ABP=17.6895;AC=1;AF=0.5
+20	37814029	.	G	GCACACA	157.624	.	AB=0.259259;ABP=16.6021;AC
+20	40675418	.	A	AGTGTGTGTGTGT	150.974	.	AB=0.21875;ABP=24.99
+20	42904995	.	A	AAAGGAAGGAAGG,AAAGGAAGGAAGGAAGG	328.509	.	AB
+20	47226827	.	C	CTCTT	184.517	.	AB=0.269231;ABP=15.0369;AC=1
+20	55765469	.	C	A	143.949	.	AB=0;ABP=0;AC=2;AF=1;AN=2;AO=5;C
+20	57002291	.	A	G	10.7264	.	AB=0.227273;ABP=17.2236;AC=1;AF=
+
+Gained correct calls:
+@ seq3a[scratch01/jkb]; egrep -v '^#' /tmp/_isec/0000.vcf|cut -c 1-60
+20	29436239	.	T	C	314.787	.	AB=0.258065;ABP=34.5317;AC=1;AF=
+20	29648764	.	T	C	44.3879	.	AB=0.205882;ABP=28.557;AC=1;AF=0
+20	50275429	.	G	GTGGGGC	395.448	.	AB=0.375;ABP=6.26751;AC=1;
+20	50336285	.	G	A	368.492	.	AB=0;ABP=0;AC=2;AF=1;AN=2;AO=12;
+
+
+..................................................
+
+Samtools:
+
+Orig vs Platinum Genomes:
+Samtools SNPs   95.22% precision  94.85% recall
+Samtools Indel  78.50% precision  61.78% recall
+
+Lossy vs Platinum Genomes:
+Samtools SNPs   95.20% precision  94.85% recall
+Samtools Indel  78.34% precision  62.09% recall
+
+Absolute terms, from orig -> lossy
+SNPS:  +28 false positive,  -3 false negative
+Indel: +36 false positive, -46 false negative
+
+ID      0       13502_7_chr20_orig.bam.samtools.norm.vcf.gz
+ID      1       13502_7_chr20_lossy.6.cram.samtools.norm.vcf.gz
+ID      2       13502_7_chr20_orig.bam.samtools.norm.vcf.gz     13502_7_chr20_lossy.6.cram.samtools.norm.vcf.gz
+# SN, Summary numbers:
+# SN    [2]id   [3]key  [4]value
+SN      0       number of samples:      1
+SN      1       number of samples:      1
+SN      0       number of records:      59
+SN      0       number of no-ALTs:      0
+SN      0       number of SNPs: 10
+SN      0       number of MNPs: 0
+SN      0       number of indels:       49
+SN      0       number of others:       0
+SN      0       number of multiallelic sites:   6
+SN      0       number of multiallelic SNP sites:       0
+SN      1       number of records:      172
+SN      1       number of no-ALTs:      0
+SN      1       number of SNPs: 41
+SN      1       number of MNPs: 0
+SN      1       number of indels:       131
+SN      1       number of others:       0
+SN      1       number of multiallelic sites:   7
+SN      1       number of multiallelic SNP sites:       0
+SN      2       number of records:      90735
+SN      2       number of no-ALTs:      0
+SN      2       number of SNPs: 79092
+SN      2       number of MNPs: 0
+SN      2       number of indels:       11643
+SN      2       number of others:       0
+SN      2       number of multiallelic sites:   786
+SN      2       number of multiallelic SNP sites:       17
+# QUAL, Stats by quality:
+# QUAL  [2]id   [3]Quality      [4]number of SNPs       [5]number of transitions (1st ALT)      [6]number of transversions (1st ALT)    [7]number of indels
+QUAL    0       3       1       1       0       7
+QUAL    0       4       3       1       2       11
+QUAL    0       5       0       0       0       9
+QUAL    0       6       1       0       1       4
+QUAL    0       7       1       1       0       3
+QUAL    0       8       1       1       0       1
+QUAL    0       11      0       0       0       1
+QUAL    0       12      1       1       0       1
+QUAL    0       13      1       1       0       0
+QUAL    0       14      0       0       0       1
+QUAL    0       20      1       0       1       0
+QUAL    0       24      0       0       0       1
+QUAL    0       32      0       0       0       1
+QUAL    0       35      0       0       0       1
+QUAL    0       45      0       0       0       1
+QUAL    0       52      0       0       0       1
+QUAL    0       69      0       0       0       1
+QUAL    0       184     0       0       0       1
+QUAL    0       192     0       0       0       1
+QUAL    0       195     0       0       0       2
+QUAL    0       198     0       0       0       1
+QUAL    1       3       10      2       8       28
+QUAL    1       4       5       1       4       26
+QUAL    1       5       7       5       2       15
+QUAL    1       6       1       0       1       12
+QUAL    1       7       5       3       2       11
+QUAL    1       8       2       0       2       5
+QUAL    1       9       0       0       0       8
+QUAL    1       10      2       1       1       3
+QUAL    1       11      2       1       1       1
+QUAL    1       12      2       0       2       2
+QUAL    1       13      1       0       1       1
+QUAL    1       14      0       0       0       1
+QUAL    1       15      0       0       0       1
+QUAL    1       16      0       0       0       2
+QUAL    1       17      2       1       1       1
+QUAL    1       18      0       0       0       1
+
+
+Winners and losers (orig vs plat // lossy vs plat):
+
+/tmp/_isec2/0000.vcf	for records private to	/tmp/_lossy2/0003.vcf.gz
+/tmp/_isec2/0001.vcf	for records private to	/tmp/_orig2/0003.vcf.gz
+
+Lost correct calls:
+@ seq3a[scratch01/jkb]; egrep -v '^#' /tmp/_isec2/0001.vcf|cut -c 1-60
+20	2760359	.	C	CA	5.26339	.	INDEL;IDV=19;IMF=0.542857;DP=35;
+20	7510267	.	TAA	T	4.58681	.	INDEL;IDV=8;IMF=0.32;DP=22;VDB=
+20	10914114	.	T	TA	3.22773	.	INDEL;IDV=17;IMF=0.447368;DP=38
+20	11807903	.	T	TA	4.87657	.	INDEL;IDV=20;IMF=0.487805;DP=41
+20	12245133	.	C	CA	5.35199	.	INDEL;IDV=5;IMF=0.227273;DP=22;
+20	18057119	.	T	G	6.35454	.	DP=30;VDB=0.0411132;SGB=-0.51153
+20	18190157	.	G	C	4.42775	.	DP=3;VDB=0.827271;SGB=-0.511536;
+20	21239702	.	C	CA	3.29908	.	INDEL;IDV=14;IMF=0.4375;DP=32;V
+20	29835401	.	A	AAAC	5.98068	.	INDEL;IDV=5;IMF=0.185185;DP=2
+20	38349001	.	CA	C	4.40112	.	INDEL;IDV=17;IMF=0.377778;DP=45
+20	40392561	.	A	G	8.05252	.	DP=28;VDB=0.14;SGB=-0.453602;MQS
+20	41077498	.	TA	T	6.48339	.	INDEL;IDV=19;IMF=0.513514;DP=37
+20	41748917	.	G	GT	7.4721	.	INDEL;IDV=12;IMF=0.444444;DP=27;
+20	41918730	.	C	CA	5.80944	.	INDEL;IDV=19;IMF=0.558824;DP=34
+20	43063165	.	G	C	4.75718	.	DP=200;VDB=0.235908;SGB=-0.68064
+20	43549791	.	AT	A	4.86163	.	INDEL;IDV=21;IMF=0.567568;DP=36
+20	46433932	.	G	C	20.7664	.	DP=38;VDB=0.0797974;SGB=-0.55641
+20	54981173	.	GT	G	3.75223	.	INDEL;IDV=19;IMF=0.339286;DP=56
+20	56407989	.	G	GA	4.12161	.	INDEL;IDV=12;IMF=0.3;DP=40;VDB=
+20	59822403	.	G	GC	8.01996	.	INDEL;IDV=32;IMF=0.376471;DP=85
+
+(All low conf, highest being 20.7664)
+
+Gained correct calls:
+@ seq3a[scratch01/jkb]; egrep -v '^#' /tmp/_isec2/0000.vcf|cut -c 1-60
+20	570945	.	A	AACAC,AAC	194	.	INDEL;IDV=25;IMF=0.714286;DP=3
+20	2008442	.	C	CT	3.78439	.	INDEL;IDV=13;IMF=0.464286;DP=28;
+20	2504625	.	CAAA	C	8.10251	.	INDEL;IDV=5;IMF=0.25;DP=19;VDB
+20	2617105	.	TAC	T,TACACACACACAC	186	.	INDEL;IDV=13;IMF=0.52
+20	3191722	.	AAAG	A	7.58795	.	INDEL;IDV=4;IMF=0.173913;DP=23
+20	3549166	.	A	AT	3.7418	.	INDEL;IDV=10;IMF=0.434783;DP=23;V
+20	4232706	.	C	CT	5.64027	.	INDEL;IDV=10;IMF=0.454545;DP=22;
+20	4949370	.	C	CTT	9.93676	.	INDEL;IDV=12;IMF=0.342857;DP=35
+20	5432204	.	A	AG	7.31117	.	INDEL;IDV=15;IMF=0.394737;DP=36;
+20	6897116	.	CT	C	3.23574	.	INDEL;IDV=16;IMF=0.410256;DP=39;
+20	7416919	.	T	TA	3.16796	.	INDEL;IDV=12;IMF=0.521739;DP=23;
+20	7507268	.	A	AT	4.36496	.	INDEL;IDV=12;IMF=0.631579;DP=19;
+20	10467573	.	G	GT	10.876	.	INDEL;IDV=16;IMF=0.516129;DP=31;
+20	16451489	.	A	AT	3.21563	.	INDEL;IDV=16;IMF=0.457143;DP=35
+20	16937426	.	CT	C	7.27445	.	INDEL;IDV=26;IMF=0.866667;DP=30
+20	17295957	.	G	GA	6.69411	.	INDEL;IDV=12;IMF=0.4;DP=30;VDB=
+20	19838767	.	T	TA	7.92229	.	INDEL;IDV=14;IMF=0.311111;DP=45
+20	19964247	.	T	TA	3.73813	.	INDEL;IDV=14;IMF=0.341463;DP=41
+20	20046260	.	G	GAAA	3.42001	.	INDEL;IDV=8;IMF=0.222222;DP=3
+20	20144228	.	G	GT	3.83311	.	INDEL;IDV=14;IMF=0.5;DP=28;VDB=
+20	20819627	.	G	GA	4.79399	.	INDEL;IDV=12;IMF=0.461538;DP=26
+20	21670107	.	C	CAA	3.92842	.	INDEL;IDV=12;IMF=0.428571;DP=2
+20	23114997	.	C	CA	4.53051	.	INDEL;IDV=11;IMF=0.6875;DP=16;V
+20	23689877	.	CTTT	C	5.53106	.	INDEL;IDV=5;IMF=0.333333;DP=1
+20	24985716	.	C	CA	4.49934	.	INDEL;IDV=15;IMF=0.46875;DP=32;
+20	25556400	.	CA	C	5.22439	.	INDEL;IDV=26;IMF=0.40625;DP=64;
+20	25719486	.	TA	T	4.7876	.	INDEL;IDV=11;IMF=0.34375;DP=32;V
+20	30514917	.	CA	C	5.0712	.	INDEL;IDV=15;IMF=0.576923;DP=26;
+20	30907330	.	T	TAC	68	.	INDEL;IDV=3;IMF=0.5;DP=6;VDB=0.6404
+20	30987905	.	T	TA	3.182	.	INDEL;IDV=14;IMF=0.35;DP=40;VDB=0
+20	31209011	.	A	G	7.16695	.	DP=11;SGB=-0.379885;MQ0F=0;AC=2;
+20	34006498	.	G	GA	3.78548	.	INDEL;IDV=12;IMF=0.333333;DP=36
+20	35237606	.	G	A	17.1919	.	DP=11;VDB=0.663511;SGB=-0.511536
+20	35237614	.	G	A	7.09648	.	DP=11;VDB=0.58;SGB=-0.453602;MQS
+20	35237622	.	G	A	34.0876	.	DP=11;VDB=0.573211;SGB=-0.556411
+20	36150582	.	C	CA	6.78866	.	INDEL;IDV=12;IMF=0.5;DP=24;VDB=
+20	36530004	.	AC	A	5.19411	.	INDEL;IDV=14;IMF=0.466667;DP=27
+20	37718364	.	ATT	A	6.55244	.	INDEL;IDV=9;IMF=0.346154;DP=26
+20	37890448	.	A	AT	5.90056	.	INDEL;IDV=19;IMF=0.5;DP=38;VDB=
+20	42051181	.	T	TA	7.04348	.	INDEL;IDV=13;IMF=0.619048;DP=21
+20	43659815	.	AT	A	4.30031	.	INDEL;IDV=25;IMF=0.657895;DP=38
+20	43931737	.	A	AAAAG	4.37281	.	INDEL;IDV=3;IMF=0.142857;DP=
+20	44362554	.	AG	A	3.87946	.	INDEL;IDV=7;IMF=0.411765;DP=17;
+20	44370690	.	A	ATTT	16.2475	.	INDEL;IDV=13;IMF=0.282609;DP=
+20	44543614	.	C	CTT	3.48117	.	INDEL;IDV=10;IMF=0.285714;DP=3
+20	44966226	.	G	GA	3.7836	.	INDEL;IDV=18;IMF=0.352941;DP=51;
+20	45623544	.	C	CT	8.64957	.	INDEL;IDV=21;IMF=0.7;DP=30;VDB=
+20	46162057	.	A	ATT	5.26374	.	INDEL;IDV=8;IMF=0.363636;DP=22
+20	46263664	.	CTTT	C	9.36947	.	INDEL;IDV=7;IMF=0.291667;DP=2
+20	46436906	.	CAA	C	3.7393	.	INDEL;IDV=11;IMF=0.366667;DP=28
+20	48488994	.	CT	C	6.07	.	INDEL;IDV=26;IMF=0.65;DP=40;VDB=0.
+20	49093164	.	G	GAA	6.50536	.	INDEL;IDV=6;IMF=0.24;DP=24;VDB
+20	49259829	.	T	TTG	9.53339	.	INDEL;IDV=3;IMF=0.166667;DP=18
+20	49364026	.	C	T	5.84906	.	DP=12;VDB=0.1;SGB=-0.453602;RPB=
+20	50368592	.	CA	C	24.7555	.	INDEL;IDV=32;IMF=0.627451;DP=51
+20	52107618	.	AC	A	9.8042	.	INDEL;IDV=3;IMF=0.157895;DP=18;V
+20	52154102	.	C	CTTT,CTT	43.3914	.	INDEL;IDV=14;IMF=0.451613
+20	52249677	.	CA	C	4.83103	.	INDEL;IDV=14;IMF=0.583333;DP=23
+20	52326240	.	TC	T	3.21741	.	INDEL;IDV=6;IMF=0.222222;DP=27;
+20	52524256	.	T	TAAA	10.3879	.	INDEL;IDV=12;IMF=0.375;DP=32;
+20	54542633	.	GTA	G	4.80549	.	INDEL;IDV=2;IMF=0.25;DP=8;VDB=
+20	54968215	.	TACAC	TAC,T	194	.	INDEL;IDV=21;IMF=0.875;DP=24
+20	55588656	.	C	CAAAAAAAA	85	.	INDEL;IDV=9;IMF=0.257143;DP=3
+20	57031304	.	G	T	6.28142	.	DP=21;VDB=0.045681;SGB=-0.511536
+20	57037899	.	C	CAAAAAA	8.03588	.	INDEL;IDV=4;IMF=0.210526;D
+20	60974604	.	G	GT	5.84439	.	INDEL;IDV=12;IMF=0.48;DP=25;VDB
+20	61176807	.	T	C	10.7903	.	DP=28;VDB=0.0298006;SGB=-0.55641
+20	61421099	.	ATT	A	4.70259	.	INDEL;IDV=10;IMF=0.322581;DP=3
+20	62111388	.	A	G	4.03056	.	DP=30;VDB=0.148533;SGB=-0.511536
+
+Several high confidence indels, but all low-ish conf SNPs
+
+
