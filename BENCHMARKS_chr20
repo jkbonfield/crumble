@@ -433,6 +433,77 @@ QUAL    1       16      0       0       0       2
 QUAL    1       17      2       1       1       1
 QUAL    1       18      0       0       0       1
 
+Plat20 vs Orig
+# Definition of sets:
+# ID    [2]id   [3]tab-separated file names
+ID      0       /nfs/users/nfs_j/jkb/work/qual_loss/plat20n-.vcf.gz
+ID      1       13502_7_chr20_orig.bam.samtools.norm.vcf.gz
+ID      2       /nfs/users/nfs_j/jkb/work/qual_loss/plat20n-.vcf.gz     13502_7_chr20_orig.bam.samtools.norm.vcf.gz
+# SN, Summary numbers:
+# SN    [2]id   [3]key  [4]value
+SN      0       number of samples:      1
+SN      1       number of samples:      1
+SN      0       number of records:      9731
+SN      0       number of no-ALTs:      0
+SN      0       number of SNPs: 4094
+SN      0       number of MNPs: 0
+SN      0       number of indels:       5679
+SN      0       number of others:       15
+SN      0       number of multiallelic sites:   656
+SN      0       number of multiallelic SNP sites:       16
+SN      1       number of records:      6288
+SN      1       number of no-ALTs:      0
+SN      1       number of SNPs: 3774
+SN      1       number of MNPs: 0
+SN      1       number of indels:       2514
+SN      1       number of others:       0
+SN      1       number of multiallelic sites:   490
+SN      1       number of multiallelic SNP sites:       3
+SN      2       number of records:      84506
+SN      2       number of no-ALTs:      0
+SN      2       number of SNPs: 75328
+SN      2       number of MNPs: 0
+SN      2       number of indels:       9178
+SN      2       number of others:       0
+SN      2       number of multiallelic sites:   302
+SN      2       number of multiallelic SNP sites:       14
+
+Plat20 vs Lossy
+# Definition of sets:
+# ID    [2]id   [3]tab-separated file names
+ID      0       /nfs/users/nfs_j/jkb/work/qual_loss/plat20n-.vcf.gz
+ID      1       13502_7_chr20_lossy.6.cram.samtools.norm.vcf.gz
+ID      2       /nfs/users/nfs_j/jkb/work/qual_loss/plat20n-.vcf.gz     13502_7_chr20_lossy.6.cram.samtools.norm.vcf.gz
+# SN, Summary numbers:
+# SN    [2]id   [3]key  [4]value
+SN      0       number of samples:      1
+SN      1       number of samples:      1
+SN      0       number of records:      9682
+SN      0       number of no-ALTs:      0
+SN      0       number of SNPs: 4091
+SN      0       number of MNPs: 0
+SN      0       number of indels:       5633
+SN      0       number of others:       15
+SN      0       number of multiallelic sites:   652
+SN      0       number of multiallelic SNP sites:       16
+SN      1       number of records:      6352
+SN      1       number of no-ALTs:      0
+SN      1       number of SNPs: 3802
+SN      1       number of MNPs: 0
+SN      1       number of indels:       2550
+SN      1       number of others:       0
+SN      1       number of multiallelic sites:   487
+SN      1       number of multiallelic SNP sites:       3
+SN      2       number of records:      84555
+SN      2       number of no-ALTs:      0
+SN      2       number of SNPs: 75331
+SN      2       number of MNPs: 0
+SN      2       number of indels:       9224
+SN      2       number of others:       0
+SN      2       number of multiallelic sites:   306
+SN      2       number of multiallelic SNP sites:       14
+
+
 
 Winners and losers (orig vs plat // lossy vs plat):
 
