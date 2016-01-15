@@ -1,4 +1,4 @@
-# qual_loss
+# Crumble
 Exploration of controlled loss of quality values for compressing CRAM files
 
 This directory contains some experimental tools that read a SAM/BAM/CRAM file,
@@ -8,7 +8,7 @@ with most qualities removed.
 **Indel_only** is a noddy exploration that simply removes all qualities except
 those within _D_ distance of an indel.
 
-**Snp_score** performs a more complete trial.  It uses a simple heterozygous
+**Crumble** performs a more complete trial.  It uses a simple heterozygous
 consensus algorithm (ripped out of _gap5_) in a couple of modes to produce a
 consensus call with a confidence.  If the calls are highly confident then it
 throws away the quality values (setting them to fixed high or low depending on
