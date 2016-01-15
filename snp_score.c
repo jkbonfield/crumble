@@ -1132,7 +1132,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	}
 
 	consensus_t cons_g5_A, cons_g5_B;
-	int call1, call2; // samtools numerical =ACMGRSVTWYHKDBN
+	int call1 = 0, call2 = 0; // samtools numerical =ACMGRSVTWYHKDBN
 
 	if (p->min_qual_A != 0) {
 	    calculate_consensus_pileup(CONS_ALL,
