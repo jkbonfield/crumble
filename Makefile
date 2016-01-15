@@ -1,13 +1,16 @@
-PROGS=indel_only snp_score
+PROGS=crumble
 
 all: $(PROGS)
 
-#HTSLIB=/software/solexa/pkg/htslib/current/install
-HTSLIB=$(HOME)/work/samtools_master/htslib
+# From git submodule add -b cram_lossy_names git@github.com:samtools/htslib.git
+HTSDIR=./htslib
+include $(HTSDIR)/htslib.mk
+HTSLIB = $(HTSDIR)/libhts.a
 
-INCLUDES=-I$(HTSLIB)/include -I$(HTSLIB)
-LIBS=-L$(HTSLIB)/lib -L$(HTSLIB) -lhts -Wl,--rpath,$(HTSLIB)/lib -Wl,--rpath,$(HTSLIB) -lm
-CFLAGS=-g -Wall
+INCLUDES=-I$(HTSDIR)/include -I$(HTSDIR)
+LIBS=-L$(HTSDIR)/lib -L$(HTSDIR) -lhts -Wl,--rpath,$(HTSDIR)/lib -Wl,--rpath,$(HTSDIR) -lpthread -lz -lm -ldl 
+#CFLAGS=-g -Wall -Werror
+CFLAGS=-O3 -Wall
 
 .c.o:
 	$(CC) $(CFLAGS) $(INCLUDES) -c $<
@@ -15,8 +18,9 @@ CFLAGS=-g -Wall
 clean:
 	-rm *.o $(PROGS)
 
-indel_only: indel_only.o
+# Not built by default
+indel_only: $(HTSLIB) indel_only.o
 	$(CC) -o $@ $< $(CFLAGS) $(LDFLAGS) $(LIBS)
 
-snp_score: snp_score.o str_finder.o
+crumble: $(HTSLIB) snp_score.o str_finder.o
 	$(CC) -o $@ snp_score.o str_finder.o $(CFLAGS) $(LDFLAGS) $(LIBS)

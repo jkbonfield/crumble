@@ -1,5 +1,7 @@
 //#define DEBUG
 
+#define CRUMBLE_VERSION "0.1"
+
 /*
  * Prunes quality based on snp calling score.
  * 
@@ -25,12 +27,13 @@
  * that local realignment doesn't change qualities.
  */
 
+// Default params
 
 //#define INDEL_DIST 40
 #define QL 10
 #define QM 25 // below => QL, else QH
 #define QH 40
-#define M 0
+#define MIN_MQUAL 0
 
 // Whether to reduce quality on mismatching bases (ie QL)
 #define REDUCE_QUAL 1
@@ -39,14 +42,18 @@
 //#define STR_DIST 1
 
 // Standard gap5 algorithm; set MIN_QUAL_A to 0 to disable
-#define MIN_QUAL_A 75
-#define MIN_INDEL_A 150
-#define MIN_DISCREP_A 1.0
+#define MIN_QUAL_A 30
+#define MIN_INDEL_A 50
+#define MIN_DISCREP_A 2.0
 
 // With mqual adjustment; set MIN_QUAL_B to 0 to disable
 #define MIN_QUAL_B 75
 #define MIN_INDEL_B 150
 #define MIN_DISCREP_B 1.0
+
+//#define MIN_QUAL_B 50
+//#define MIN_INDEL_B 100
+//#define MIN_DISCREP_B 1.5
 
 // Extra growth to expand indel qual region +/- by SCALE.
 #define INDEL_SCALE 1.1
@@ -61,8 +68,10 @@
 #include <assert.h>
 #include <math.h>
 #include <float.h>
+#include <getopt.h>
 
 #include <htslib/sam.h>
+#include <htslib/khash.h>
 
 #include "str_finder.h"
 
@@ -78,18 +87,44 @@
 #define ABS(a) ((a)>=0?(a):-(a))
 #endif
 
+KHASH_SET_INIT_INT(aux_exists)
+typedef khash_t(aux_exists) *auxhash_t;
+
+typedef struct {
+    int    reduce_qual;
+    int    STR_dist;
+    double indel_scale;
+    int    qlow, qcutoff, qhigh;
+    int    min_mqual;
+    char  *region;
+
+    // Standard gap5 algorithm
+    int    min_qual_A;
+    int    min_indel_A;
+    double min_discrep_A;
+
+    // Mqual adjusted algorithm
+    int    min_qual_B;
+    int    min_indel_B;
+    double min_discrep_B;
+
+    // Tag white/black lists
+    auxhash_t aux_whitelist;
+    auxhash_t aux_blacklist;
+} cram_lossy_params;
+
 
 //-----------------------------------------------------------------------------
 // Binning
 
 static int bin2[256];
 
-void init_bins(void) {
+void init_bins(cram_lossy_params *p) {
     int i;
-    for (i = 0; i < QM; i++)
-	bin2[i] = QL;
+    for (i = 0; i < p->qcutoff; i++)
+	bin2[i] = p->qlow;
     for (; i < 256; i++)
-	bin2[i] = QH;
+	bin2[i] = p->qhigh;
 }
 
 //-----------------------------------------------------------------------------
@@ -792,13 +827,96 @@ void remove_bam_list(bam_sorted_list *bl, bam_sorted_item *ele) {
     ele->s_prev = ele->s_next = NULL;
 }
 
-void flush_bam_list(bam_sorted_list *bl, int before, samFile *out, bam_hdr_t *header) {
+// Copied from htslib/sam.c.
+// TODO: we need a proper interface to find the length of an aux tag,
+// or at the very make exportable versions of these in htslib.
+static inline int aux_type2size(uint8_t type)
+{
+    switch (type) {
+    case 'A': case 'c': case 'C':
+        return 1;
+    case 's': case 'S':
+        return 2;
+    case 'i': case 'I': case 'f':
+        return 4;
+    case 'd':
+        return 8;
+    case 'Z': case 'H': case 'B':
+        return type;
+    default:
+        return 0;
+    }
+}
+
+// Copied from htslib/sam.c.
+static inline uint8_t *skip_aux(uint8_t *s)
+{
+    int size = aux_type2size(*s); ++s; // skip type
+    uint32_t n;
+    switch (size) {
+    case 'Z':
+    case 'H':
+        while (*s) ++s;
+        return s + 1;
+    case 'B':
+        size = aux_type2size(*s); ++s;
+        memcpy(&n, s, 4); s += 4;
+        return s + size * n;
+    case 0:
+        abort();
+        break;
+    default:
+        return s + size;
+    }
+}
+
+void purge_tags(cram_lossy_params *settings, bam1_t *b) {
+    if (settings->aux_whitelist) {
+        uint8_t *s_from, *s_to;
+        auxhash_t h = settings->aux_whitelist;
+
+        s_from = s_to = bam_get_aux(b);
+        while (s_from < b->data + b->l_data) {
+            int x = (int)s_from[0]<<8 | s_from[1];
+            uint8_t *s = skip_aux(s_from+2);
+
+            if (kh_get(aux_exists, h, x) != kh_end(h) ) {
+                if (s_to != s_from) memmove(s_to, s_from, s - s_from);
+                s_to += s - s_from;
+            }
+            s_from = s;
+        }
+        b->l_data = s_to - b->data;
+
+    } else if (settings->aux_blacklist) {
+        uint8_t *s_from, *s_to;
+        auxhash_t h = settings->aux_blacklist;
+
+        s_from = s_to = bam_get_aux(b);
+        while (s_from < b->data + b->l_data) {
+            int x = (int)s_from[0]<<8 | s_from[1];
+            uint8_t *s = skip_aux(s_from+2);
+
+            if (kh_get(aux_exists, h, x) == kh_end(h) ) {
+                if (s_to != s_from) memmove(s_to, s_from, s - s_from);
+                s_to += s - s_from;
+            }
+            s_from = s;
+        }
+        b->l_data = s_to - b->data;
+    }
+}
+
+void flush_bam_list(cram_lossy_params *p, bam_sorted_list *bl,
+		    int before, samFile *out, bam_hdr_t *header) {
     bam_sorted_item *bi_next = NULL, *bi;
     for (bi = bl->s_head; bi; bi = bi_next) {
 	bi_next = bi->s_next;
 
 	if (bi->end_pos >= before)
 	    break;
+
+	purge_tags(p, bi->b);
 
 	sam_write1(out, header, bi->b);
 	bam_destroy1(bi->b);
@@ -979,57 +1097,15 @@ void mask_LC_regions(bam1_t *b, int apos, int rpos, int *min_pos, int *max_pos) 
 //     free(seq);
 // }
 
-int main(int argc, char **argv) {
-    samFile *in, *out = NULL;
+int transcode(cram_lossy_params *p, samFile *in, samFile *out,
+	      bam_hdr_t *header, hts_itr_t *h_iter) {
     bam_plp_t p_iter;
     int tid, pos;
     int n_plp;
     const bam_pileup1_t *plp;
-    bam_hdr_t *header;
     pileup_cd cd;
-    hts_itr_t *h_iter = NULL;
     bam_sorted_list *bl = bam_sorted_list_new();
     bam_sorted_list *b_hist = bam_sorted_list_new();
-
-    init_bins();
-
-    if (argc < 2) {
-	fprintf(stderr, "Usage: indel_only SAM/BAM/CRAM-file [region]\n");
-	return 1;
-    }
-
-    if (!(in = sam_open(argv[1], "rb"))) {
-	perror(argv[1]);
-	return 1;
-    }
-
-    if (!(out = sam_open("-", "wc"))) {
-	//if (!(out = sam_open("-", "w"))) {
-	perror("(stdout)");
-	return 1;
-    }
-
-    hts_set_opt(in, HTS_OPT_NTHREADS, 2);
-    hts_set_opt(out, HTS_OPT_NTHREADS, 2);
-
-    if (!(header = sam_hdr_read(in))) {
-	fprintf(stderr, "Failed to read file header\n");
-	return 1;
-    }
-    if (out && sam_hdr_write(out, header) != 0) {
-	fprintf(stderr, "Failed to write file header\n");
-	return 1;
-    }
-
-    if (argc > 2) {
-        hts_idx_t *idx = sam_index_load(in, argv[1]);
-	h_iter = idx ? sam_itr_querys(idx, header, argv[2]) : NULL;
-	if (!h_iter || !idx) {
-	    fprintf(stderr, "Failed to load index and/or parse iterator.\n");
-	    return 1;
-	}
-	hts_idx_destroy(idx);
-    }
 
     cd.fp = in;
     cd.header = header;
@@ -1058,7 +1134,7 @@ int main(int argc, char **argv) {
 	consensus_t cons_g5_A, cons_g5_B;
 	int call1, call2; // samtools numerical =ACMGRSVTWYHKDBN
 
-	if (MIN_QUAL_A != 0) {
+	if (p->min_qual_A != 0) {
 	    calculate_consensus_pileup(CONS_ALL,
 				       plp, n_plp, &cons_g5_A);
 	    if (cons_g5_A.scores[6] > 0) {
@@ -1069,7 +1145,7 @@ int main(int argc, char **argv) {
 	    }
 	}
 
-	if (MIN_QUAL_B != 0) {
+	if (p->min_qual_B != 0) {
 	    calculate_consensus_pileup(CONS_ALL | CONS_MQUAL,
 				       plp, n_plp, &cons_g5_B);
 	    if (cons_g5_B.scores[6] > 0) {
@@ -1085,7 +1161,7 @@ int main(int argc, char **argv) {
 #endif
 
 #ifdef DEBUG
-	if (MIN_QUAL_A != 0) {
+	if (p->min_qual_A != 0) {
 	    if (cons_g5_A.scores[6] > 0) {
 		printf("%c/%c %4d\t",
 		       "ACGT*"[cons_g5_A.het_call / 5], "ACGT*"[cons_g5_A.het_call % 5],
@@ -1097,7 +1173,7 @@ int main(int argc, char **argv) {
 	    }
 	}
 
-	if (MIN_QUAL_B != 0) {
+	if (p->min_qual_B != 0) {
 	    if (cons_g5_B.scores[6] > 0) {
 		printf("%c/%c %4d\t",
 		       "ACGT*"[cons_g5_B.het_call / 5], "ACGT*"[cons_g5_B.het_call % 5],
@@ -1122,11 +1198,11 @@ int main(int argc, char **argv) {
 	int sB = cons_g5_B.scores[6] > 0
 	    ? cons_g5_B.scores[6]
 	    : cons_g5_B.phred;
-	preserve = ((MIN_QUAL_A && MIN_QUAL_B && hA != hB) ||
-		    (MIN_QUAL_A && sA < MIN_QUAL_A) ||
-		    (MIN_QUAL_B && sB < MIN_QUAL_B));
-	preserve |= ((MIN_QUAL_A && cons_g5_A.discrep >= MIN_DISCREP_A) ||
-		     (MIN_QUAL_B && cons_g5_B.discrep >= MIN_DISCREP_B));
+	preserve = ((p->min_qual_A && p->min_qual_B && hA != hB) ||
+		    (p->min_qual_A && sA < p->min_qual_A) ||
+		    (p->min_qual_B && sB < p->min_qual_B));
+	preserve |= ((p->min_qual_A && cons_g5_A.discrep >= p->min_discrep_A) ||
+		     (p->min_qual_B && cons_g5_B.discrep >= p->min_discrep_B));
 
 #ifdef DEBUG
 	if (preserve) {
@@ -1143,8 +1219,8 @@ int main(int argc, char **argv) {
 	    // store the indel quals if the indel could be heterozygous or
 	    // a homozygous indel.
 	    if ((plp[i].indel || plp[i].is_del)
-		&& ((MIN_QUAL_A && sA < MIN_INDEL_A) ||
-		    (MIN_QUAL_B && sB < MIN_INDEL_B))) {
+		&& ((p->min_indel_A) ||
+		    (p->min_qual_B && sB < p->min_indel_B))) {
 		if (indel < ABS(plp[i].indel) + plp[i].is_del)
 		    indel = ABS(plp[i].indel) + plp[i].is_del;
 
@@ -1154,8 +1230,8 @@ int main(int argc, char **argv) {
 		if (max_pos < pos) max_pos = pos;
 
 		// Extra growth, paranoia.
-		min_pos2 = pos - (pos-min_pos)*INDEL_SCALE;
-		max_pos2 = pos + (max_pos-pos)*INDEL_SCALE;
+		min_pos2 = pos - (pos-min_pos)*p->indel_scale;
+		max_pos2 = pos + (max_pos-pos)*p->indel_scale;
 	    }
 
 	    //if (min_pos != INT_MAX || indel)
@@ -1178,7 +1254,7 @@ int main(int argc, char **argv) {
 
 		//mask_indels(b2);
 		//mask_clips(b2);
-		if (b->core.qual <= M) {
+		if (b->core.qual <= p->min_mqual) {
 		    int x;
 		    for (x = 0; x < b->core.l_qseq; x++)
 			bam_get_qual(b2)[x] |= 0x80;
@@ -1290,12 +1366,237 @@ int main(int argc, char **argv) {
 	}
 
 	// Flush history (preserving sort order).
-	flush_bam_list(b_hist, left_most, out, header);
+	flush_bam_list(p, b_hist, left_most, out, header);
     }
 
-    flush_bam_list(b_hist, INT_MAX, out, header);
+    flush_bam_list(p, b_hist, INT_MAX, out, header);
 
     bam_plp_destroy(p_iter);
+
+    return 0;
+}
+
+int parse_aux_list(auxhash_t *h, char *optarg) {
+    if (!*h)
+        *h = kh_init(aux_exists);
+
+    while (strlen(optarg) >= 2) {
+        int x = optarg[0]<<8 | optarg[1];
+        int ret = 0;
+        kh_put(aux_exists, *h, x, &ret);
+
+        optarg += 2;
+        if (*optarg == ',') // allow white-space too for easy `cat file`?
+            optarg++;
+        else if (*optarg != 0)
+            break;
+    }
+
+    if (strlen(optarg) != 0) {
+        fprintf(stderr, "main_samview: Error parsing option, "
+                "auxiliary tags should be exactly two characters long.\n");
+        return -1;
+    }
+
+    return 0;
+}
+
+void usage(FILE *fp) {
+    fprintf(fp, "Crumble version %s\n\n", CRUMBLE_VERSION);
+    fprintf(fp, "Usage: crumble [options] in-file out-file\n");
+    fprintf(fp, "\nOptions:\n"
+	    "-I fmt(,opt...)   Input format and format-options [auto].\n"
+	    "-O fmt(,opt...)   Output format and format-options [SAM].\n");
+    fprintf(fp,
+"-c qual_cutoff    In highly confident regions, quality values above/below\n"
+"-l qual_lower         'qual_cutoff' [%d] are quantised to 'qual_lower' [%d]\n"
+"-u qual_upper         and 'qual_upper' [%d] based on agreement to consensus.\n",
+	    QM, QL, QH);
+    fprintf(fp, "-m min_mqual      Keep qualities for seqs with mapping quality <= mqual [%d].\n", MIN_MQUAL);
+    fprintf(fp, "-L bool           Whether mismatching bases can have qualities lowered [%d]\n", REDUCE_QUAL);
+    fprintf(fp, "-s indel_scale    Multiplicative factor applied to size of indel+STR [%.1f]\n", INDEL_SCALE);
+    fprintf(fp, "-R STR_dist       Additive factor applied to size of indel+STR [%d]\n", STR_DIST);
+    fprintf(fp, "-r region         Limit input to region chr:pos(-pos) []\n");
+    fprintf(fp, "-t tag_list       Comma separated list of aux tags to keep []\n");
+    fprintf(fp, "-T tag_list       Comma separated list of aux tags to discard []\n");
+    fprintf(fp, "\n(Calling while ignoring mapping quality)\n");
+    fprintf(fp, "-q int            Minimum snp call confidence [%d]\n", MIN_QUAL_A);
+    fprintf(fp, "-d int            Minimum indel call confidence [%d]\n", MIN_INDEL_A);
+    fprintf(fp, "-x float          Minimum discrepancy score [%.1f]\n", MIN_DISCREP_A);
+    fprintf(fp, "\n(Calling with use of mapping quality)\n");
+    fprintf(fp, "-Q int            Minimum snp call confidence [%d]\n", MIN_QUAL_B);
+    fprintf(fp, "-D int            Minimum indel call confidence [%d]\n", MIN_INDEL_B);
+    fprintf(fp, "-X float          Minimum discrepancy score [%.1f]\n", MIN_DISCREP_B);
+    fprintf(fp, "\n");
+    fprintf(fp,
+"Standard htslib format options apply.  So to create a CRAM file with lossy\n\
+template names enabled and a larger number of sequences per slice, try:\n\
+\n\
+    crumble -O cram,lossy_names,seqs_per_slice=100000\n\
+\n\
+The lossy quality encoding works by running two distinct heterozygous consensus\n\
+calling algorithms; with and without the use of mapping qualities.  Use -q 0\n\
+or -Q 0 to disable one of these if only the other is needed.  When operating,\n\
+any sufficiently high quality SNP (above -q / -Q) with have the qualities for\n\
+the bases adjusted to 'qual_lower' or 'qual_upper'.  Similarly for any high\n\
+quality indel.  An lower quality indel will causes neighbouring bases for\n\
+all sequences at that site to be kept, for the region as large as the indel\n\
+plus an extension along any short tandem repeats (STR), multiplied by \n\
+'indel_scale' plus an additional 'STR_dist'.\n");
+}
+
+int main(int argc, char **argv) {
+    samFile *in, *out = NULL;
+    htsFormat in_fmt = {0};
+    htsFormat out_fmt = {0};
+    bam_hdr_t *header;
+    hts_itr_t *h_iter = NULL;
+    int opt;
+
+    cram_lossy_params params = {
+	.reduce_qual   = REDUCE_QUAL,       // -r
+	.STR_dist      = STR_DIST,          // -R
+	.indel_scale   = INDEL_SCALE,       // -s
+	.qlow          = QL,                // -l
+	.qcutoff       = QM,		    // -c
+	.qhigh         = QH,		    // -u
+	.min_mqual     = MIN_MQUAL,	    // -m
+	.min_qual_A    = MIN_QUAL_A,	    // -q
+	.min_indel_A   = MIN_INDEL_A,	    // -d
+	.min_discrep_A = MIN_DISCREP_A,	    // -x
+	.min_qual_B    = MIN_QUAL_B,	    // -Q
+	.min_indel_B   = MIN_INDEL_B,	    // -D
+	.min_discrep_B = MIN_DISCREP_B,     // -X
+	.aux_whitelist = NULL,              // -t
+	.aux_blacklist = NULL,              // -T
+	.region        = NULL,              // -r
+    };
+
+    while ((opt = getopt(argc, argv, "O:q:d:x:Q:D:X:m:l:u:c:s:L:R:t:T:hr:")) != -1) {
+	switch (opt) {
+	case 'I':
+	    hts_parse_format(&in_fmt, optarg);
+	    break;
+
+	case 'O':
+	    hts_parse_format(&out_fmt, optarg);
+	    break;
+
+	case 'q':
+	    params.min_qual_A = atoi(optarg);
+	    break;
+	case 'd':
+	    params.min_indel_A = atoi(optarg);
+	    break;
+	case 'x':
+	    params.min_discrep_A = atof(optarg);
+	    break;
+
+	case 'Q':
+	    params.min_qual_B = atoi(optarg);
+	    break;
+	case 'D':
+	    params.min_indel_B = atoi(optarg);
+	    break;
+	case 'X':
+	    params.min_discrep_B = atof(optarg);
+	    break;
+
+	case 'm':
+	    params.min_mqual = atoi(optarg);
+	    break;
+
+	case 'l':
+	    params.qlow = atoi(optarg);
+	    break;
+	case 'u':
+	    params.qhigh = atoi(optarg);
+	    break;
+	case 'c':
+	    params.qcutoff = atoi(optarg);
+	    break;
+
+	case 's':
+	    params.indel_scale = atof(optarg);
+	    break;
+
+	case 'R':
+	    params.STR_dist = atoi(optarg);
+	    break;
+
+	case 'L':
+	    params.reduce_qual = atoi(optarg);
+	    break;
+
+	case 'r':
+	    params.region = optarg;
+	    break;
+
+	case 't':
+            if (parse_aux_list(&params.aux_whitelist, optarg)) {
+		usage(stderr);
+                return 1;
+	    }
+            break;
+
+	case 'T':
+            if (parse_aux_list(&params.aux_blacklist, optarg)) {
+		usage(stderr);
+                return 1;
+	    }
+            break;
+
+	case 'h':
+	    usage(stdout);
+	    return 1;
+
+	default: /* ? */
+	    usage(stderr);
+	    return 1;
+	}
+    }
+
+    init_bins(&params);
+
+    char *fnin = optind < argc ? argv[optind++] : "-";
+    if (!(in = sam_open_format(fnin, "r", &in_fmt))) {
+	perror(argv[optind]);
+	return 1;
+    }
+
+    char mode[5] = "w";
+    char *fnout = optind < argc ? argv[optind++] : "-";
+    sam_open_mode(mode+1, fnout, NULL);
+
+    if (!(out = sam_open_format(fnout, mode, &out_fmt))) {
+	perror("(stdout)");
+	return 1;
+    }
+
+    if (!(header = sam_hdr_read(in))) {
+	fprintf(stderr, "Failed to read file header\n");
+	return 1;
+    }
+    if (out && sam_hdr_write(out, header) != 0) {
+	fprintf(stderr, "Failed to write file header\n");
+	return 1;
+    }
+
+    if (params.region) {
+        hts_idx_t *idx = sam_index_load(in, fnin);
+    	h_iter = idx ? sam_itr_querys(idx, header, params.region) : NULL;
+    	if (!h_iter || !idx) {
+    	    fprintf(stderr, "Failed to load index and/or parse iterator.\n");
+    	    return 1;
+    	}
+    	hts_idx_destroy(idx);
+    }
+
+    if (transcode(&params, in, out, header, h_iter) != 0) {
+	fprintf(stderr, "Error while reducing file\n");
+	return 1;
+    }
+
     bam_hdr_destroy(header);
     if (h_iter) hts_itr_destroy(h_iter);
 
@@ -1309,78 +1610,5 @@ int main(int argc, char **argv) {
 	return 1;
     }
 
-    // free sorted list
-
     return 0;
 }
-
-
-/*
-
-Mapping quality distribution on first 2Gb of 16250_1.bam
-
-0 1214051
-1 29715
-2 12905
-3 41297
-4 13323
-5 13415
-6 55322
-7 16876
-8 10478
-9 19654
-10 7667
-11 6675
-12 22447
-13 8630
-14 5123
-15 12154
-16 6180
-17 6074
-18 11340
-19 7864
-20 9194
-21 12132
-22 14394
-23 10927
-24 14694
-25 23238
-26 3576
-27 71092
-28 3932
-29 3708
-30 8752
-31 5505
-32 4633
-33 7899
-34 4227
-35 3813
-36 6539
-37 5517
-38 3208
-39 10909
-40 161991
-41 9579
-42 8908
-43 14373
-44 10640
-45 18752
-46 19069
-47 26576
-48 62546
-49 5956
-50 9120
-51 7198
-52 11103
-53 5500
-54 10075
-55 8144
-56 6276
-57 24364
-58 5976
-59 12047
-60 25222728
-
-27410000 reads, so mqual 0 is 4.4% of the data.
-
-*/
