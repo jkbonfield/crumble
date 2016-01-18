@@ -25,6 +25,14 @@
  * Identify low complexity regions.  If we're preserving confidence
  * then it needs to be for all bases in that low-complexity section so
  * that local realignment doesn't change qualities.
+ *
+ * Consider using STR method for detecting start/end range of bases to
+ * keep for SNPs as well as indels, particularly when the sequence is
+ * soft-clipped during an STR.  (Possibility of misaligned bases
+ * then.)  Or just a low complexity filter? Or concordant soft-clips?
+ *
+ * For indels, consider the soft-clip adjustment on reads ending in
+ * STR adjacent to indels as these bases don't confirm the count.
  */
 
 // Default params
@@ -1017,7 +1025,8 @@ int ref2query_pos(bam1_t *b, int pos) {
 // into seq b.  This is used to find the extents over which we may wish to
 // preserve scores given something important is going on at apos (typically
 // indel).
-void mask_LC_regions(bam1_t *b, int apos, int rpos, int *min_pos, int *max_pos) {
+void mask_LC_regions(cram_lossy_params *p, bam1_t *b, int apos, int rpos,
+		     int *min_pos, int *max_pos) {
     int len = b->core.l_qseq;
     char *seq = malloc(len);
     int i;
@@ -1028,7 +1037,7 @@ void mask_LC_regions(bam1_t *b, int apos, int rpos, int *min_pos, int *max_pos) 
     rep_ele *reps = find_STR(seq, len, 0), *elt, *tmp;
 
     DL_FOREACH_SAFE(reps, elt, tmp) {
-	if (!(rpos+STR_DIST >= elt->start && rpos-STR_DIST <= elt->end)) {
+	if (!(rpos+p->STR_dist >= elt->start && rpos-p->STR_dist <= elt->end)) {
 	    //fprintf(stderr, "SKIP rpos %d, apos %d:\t%2d .. %2d %.*s\n",
 	    //	    rpos, apos,
 	    //	    elt->start, elt->end,
@@ -1043,10 +1052,10 @@ void mask_LC_regions(bam1_t *b, int apos, int rpos, int *min_pos, int *max_pos) 
 	//	elt->start, elt->end,
 	//	elt->end - elt->start+1, &seq[elt->start]);
 
-	if (*min_pos > apos + elt->start - rpos - STR_DIST)
-	    *min_pos = apos + elt->start - rpos - STR_DIST;
-	if (*max_pos < apos + elt->end - rpos+1 + STR_DIST)
-	    *max_pos = apos + elt->end - rpos+1 + STR_DIST;
+	if (*min_pos > apos + elt->start - rpos - p->STR_dist)
+	    *min_pos = apos + elt->start - rpos - p->STR_dist;
+	if (*max_pos < apos + elt->end - rpos+1 + p->STR_dist)
+	    *max_pos = apos + elt->end - rpos+1 + p->STR_dist;
 
 	DL_DELETE(reps, elt);
 	free(elt);
@@ -1224,8 +1233,8 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 		if (indel < ABS(plp[i].indel) + plp[i].is_del)
 		    indel = ABS(plp[i].indel) + plp[i].is_del;
 
-		mask_LC_regions(plp[i].b, pos, plp[i].qpos+1, &min_pos, &max_pos);
-		mask_LC_regions(plp[i].b, pos+indel, plp[i].qpos+1, &min_pos, &max_pos);
+		mask_LC_regions(p, plp[i].b, pos, plp[i].qpos+1, &min_pos, &max_pos);
+		mask_LC_regions(p, plp[i].b, pos+indel, plp[i].qpos+1, &min_pos, &max_pos);
 		if (min_pos > pos) min_pos = pos;
 		if (max_pos < pos) max_pos = pos;
 
