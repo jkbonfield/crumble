@@ -8,6 +8,8 @@ bcftools=bcftools
 samtools=samtools
 bgzip=bgzip
 freebayes=/software/solexa/pkg/freebayes/1.0.1/bin/freebayes
+gatk_jar=/software/solexa/pkg/GATK/GenomeAnalysisTK-3.5/GenomeAnalysisTK.jar
+gatk_key=/software/vertres/installs/gatk/vertres_gatk.key
 
 if [ $# -ne 3 ]
 then
@@ -26,19 +28,25 @@ echo prefix: $prefix
 
 #-----------------------------------------------------------------------------
 # With freebayes; better on indels
-$samtools view -u $bam | $freebayes -jH0 -f $ref - | bcftools norm -f $ref | $bgzip > $prefix.freebayes.norm.vcf.gz
+($samtools view -u $bam | $freebayes -jH0 -f $ref - | bcftools norm -f $ref | $bgzip > $prefix.freebayes.norm.vcf.gz
 $bcftools index $prefix.freebayes.norm.vcf.gz
-$bcftools stats -s- $truth $prefix.freebayes.norm.vcf.gz > $prefix.freebayes.stats
+$bcftools stats -s- $truth $prefix.freebayes.norm.vcf.gz > $prefix.freebayes.stats) &
 
 #-----------------------------------------------------------------------------
 # With samtools; better on SNPs
 
-#$samtools mpileup -g -f $ref $bam | $bcftools call -vmO z -o $prefix.vcf.gz
-$samtools mpileup -m 2 -p -F 0.1 -g -f $ref $bam | $bcftools call -vmO z -o $prefix.vcf.gz
+($samtools mpileup -m 2 -p -F 0.1 -g -f $ref $bam | $bcftools call -vmO z -o $prefix.vcf.gz
 #$bcftools mpileup -m 2 -p -F 0.1 -g -f $ref $bam | $bcftools call -vmO z -o $prefix.vcf.gz
 $bcftools norm -f $ref $prefix.vcf.gz | $bgzip > $prefix.samtools.norm.vcf.gz
 $bcftools index $prefix.samtools.norm.vcf.gz
-$bcftools stats -s- $truth $prefix.samtools.norm.vcf.gz > $prefix.samtools.stats
+$bcftools stats -s- $truth $prefix.samtools.norm.vcf.gz > $prefix.samtools.stats) &
 
 #-----------------------------------------------------------------------------
 # With GATK
+samtools index $bam
+(/software/bin/java -Xmx4g -jar $gatk_jar -T HaplotypeCaller -R $ref -I $bam --genotyping_mode DISCOVERY -stand_emit_conf 0 -stand_call_conf 30 -K $gatk_key | bcftools norm -f $ref - | bgzip > $prefix.gatk.norm.vcf.gz
+$bcftools index $prefix.gatk.norm.vcf.gz
+$bcftools stats -s- $truth $prefix.gatk.norm.vcf.gz > $prefix.gatk.stats) &
+
+wait
+
