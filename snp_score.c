@@ -1,6 +1,6 @@
 //#define DEBUG
 
-#define CRUMBLE_VERSION "0.1"
+#define CRUMBLE_VERSION "0.2"
 
 /*
  * Prunes quality based on snp calling score.
@@ -37,17 +37,15 @@
 
 // Default params
 
-//#define INDEL_DIST 40
 #define QL 10
 #define QM 25 // below => QL, else QH
 #define QH 40
+
+// If mapping qual <= MIN_MQUAL we preserve all quality values.
 #define MIN_MQUAL 0
 
-// Whether to reduce quality on mismatching bases (ie QL)
+// Whether to allow quality reduction on mismatching bases (ie QL)
 #define REDUCE_QUAL 1
-
-#define STR_DIST 2
-//#define STR_DIST 1
 
 // Standard gap5 algorithm; set MIN_QUAL_A to 0 to disable
 #define MIN_QUAL_A 30
@@ -63,8 +61,13 @@
 //#define MIN_INDEL_B 100
 //#define MIN_DISCREP_B 1.5
 
-// Extra growth to expand indel qual region +/- by SCALE.
-#define INDEL_SCALE 1.1
+// Extra growth to expand indel qual region.
+// New region = (old_region + STR_ADD) * STR_MUL
+#define I_STR_MUL 1.1
+#define S_STR_MUL 0.0
+
+#define I_STR_ADD 2
+#define S_STR_ADD 0
 
 //#define MIN_QUAL 30
 //#define MIN_INDEL 50
@@ -100,8 +103,8 @@ typedef khash_t(aux_exists) *auxhash_t;
 
 typedef struct {
     int    reduce_qual;
-    int    STR_dist;
-    double indel_scale;
+    int    iSTR_add,  sSTR_add;
+    double iSTR_mul, sSTR_mul;
     int    qlow, qcutoff, qhigh;
     int    min_mqual;
     char  *region;
@@ -977,29 +980,7 @@ int ref2query_pos(bam1_t *b, int pos) {
 }
 
 
-// // Masks any base within D bases of an indel cigar operator
-// void mask_indels(bam1_t *b) {
-//     uint32_t *cig = bam_get_cigar(b);
-//     int i, n = b->core.n_cigar, q;
-// 
-//     for (i = q = 0; i < n; i++) {
-// 	int op = bam_cigar_op(cig[i]);
-// 	int oplen = bam_cigar_oplen(cig[i]);
-// 
-// 	if (op == BAM_CINS || op == BAM_CDEL) {
-// 	    uint8_t *qual = bam_get_qual(b);
-// 	    int x, x_s = q-INDEL_DIST, x_e = q+oplen+INDEL_DIST;
-// 	    if (x_s < 0) x_s = 0;
-// 	    if (x_e > b->core.l_qseq) x_e = b->core.l_qseq;
-// 	    for (x = x_s; x < x_e; x++)
-// 		qual[x] |= 0x80;
-// 	}
-// 	if (bam_cigar_type(op) & 1)
-// 	    q += oplen;
-//     }
-// }
-
-// // Masks any base within D bases of a soft-clip. Hard too?
+// // Masks any base within INDEL_ADD bases of a soft-clip. Hard too?
 // void mask_clips(bam1_t *b) {
 //     uint32_t *cig = bam_get_cigar(b);
 //     int i, n = b->core.n_cigar, q;
@@ -1010,7 +991,7 @@ int ref2query_pos(bam1_t *b, int pos) {
 // 
 // 	if (op == BAM_CSOFT_CLIP) {
 // 	    uint8_t *qual = bam_get_qual(b);
-// 	    int x, x_s = q-INDEL_DIST, x_e = q+oplen+INDEL_DIST;
+// 	    int x, x_s = q-INDEL_ADD, x_e = q+oplen+INDEL_ADD;
 // 	    if (x_s < 0) x_s = 0;
 // 	    if (x_e > b->core.l_qseq) x_e = b->core.l_qseq;
 // 	    for (x = x_s; x < x_e; x++)
@@ -1025,8 +1006,8 @@ int ref2query_pos(bam1_t *b, int pos) {
 // into seq b.  This is used to find the extents over which we may wish to
 // preserve scores given something important is going on at apos (typically
 // indel).
-void mask_LC_regions(cram_lossy_params *p, bam1_t *b, int apos, int rpos,
-		     int *min_pos, int *max_pos) {
+void mask_LC_regions(cram_lossy_params *p, int is_indel, bam1_t *b,
+		     int apos, int rpos, int *min_pos, int *max_pos) {
     int len = b->core.l_qseq;
     char *seq = malloc(len);
     int i;
@@ -1037,11 +1018,17 @@ void mask_LC_regions(cram_lossy_params *p, bam1_t *b, int apos, int rpos,
     rep_ele *reps = find_STR(seq, len, 0), *elt, *tmp;
 
     DL_FOREACH_SAFE(reps, elt, tmp) {
-	if (!(rpos+p->STR_dist >= elt->start && rpos-p->STR_dist <= elt->end)) {
+	if (is_indel && 
+	    !(rpos+p->iSTR_add >= elt->start && rpos-p->iSTR_add <= elt->end)) {
 	    //fprintf(stderr, "SKIP rpos %d, apos %d:\t%2d .. %2d %.*s\n",
 	    //	    rpos, apos,
 	    //	    elt->start, elt->end,
 	    //	    elt->end - elt->start+1, &seq[elt->start]);
+	    DL_DELETE(reps, elt);
+	    free(elt);
+	    continue;
+	} else if (!is_indel &&
+		   !(rpos+p->sSTR_add >= elt->start && rpos-p->sSTR_add <= elt->end)) {
 	    DL_DELETE(reps, elt);
 	    free(elt);
 	    continue;
@@ -1052,10 +1039,17 @@ void mask_LC_regions(cram_lossy_params *p, bam1_t *b, int apos, int rpos,
 	//	elt->start, elt->end,
 	//	elt->end - elt->start+1, &seq[elt->start]);
 
-	if (*min_pos > apos + elt->start - rpos - p->STR_dist)
-	    *min_pos = apos + elt->start - rpos - p->STR_dist;
-	if (*max_pos < apos + elt->end - rpos+1 + p->STR_dist)
-	    *max_pos = apos + elt->end - rpos+1 + p->STR_dist;
+	if (is_indel) {
+	    if (*min_pos > apos + elt->start - rpos - p->iSTR_add)
+		*min_pos = apos + elt->start - rpos - p->iSTR_add;
+	    if (*max_pos < apos + elt->end - rpos+1 + p->iSTR_add)
+		*max_pos = apos + elt->end - rpos+1 + p->iSTR_add;
+	} else {
+	    if (*min_pos > apos + elt->start - rpos - p->sSTR_add)
+		*min_pos = apos + elt->start - rpos - p->sSTR_add;
+	    if (*max_pos < apos + elt->end - rpos+1 + p->sSTR_add)
+		*max_pos = apos + elt->end - rpos+1 + p->sSTR_add;
+	}
 
 	DL_DELETE(reps, elt);
 	free(elt);
@@ -1063,48 +1057,6 @@ void mask_LC_regions(cram_lossy_params *p, bam1_t *b, int apos, int rpos,
 
     free(seq);
 }
-
-// // Masks low-complexity data as pos and either side by as far as it extends.
-// void mask_LC(bam1_t *bdest, bam1_t *bsrc, int pos) {
-//     int len = bdest->core.l_qseq;
-//     char *seq = malloc(len);
-//     int i;
-// 
-//     pos -= bdest->core.pos;
-// 
-//     for (i = 0; i < len; i++)
-// 	seq[i] = seq_nt16_str[bam_seqi(bam_get_seq(bsrc), i)];
-// 
-//     rep_ele *reps = find_STR(seq, len, 0), *elt, *tmp;
-// 
-//     DL_FOREACH_SAFE(reps, elt, tmp) {
-// 	if (!(pos >= elt->start && pos <= elt->end)) {
-// 	    DL_DELETE(reps, elt);
-// 	    free(elt);
-// 	    continue;
-// 	}
-// 	
-// 	//fprintf(stderr, "%d:\t%2d .. %2d %.*s\n",
-// 	//	bsrc->core.pos + pos,
-// 	//	elt->start, elt->end,
-// 	//	elt->end - elt->start+1, &seq[elt->start]);
-// 	
-// 	int x;
-// 	//uint8_t *qual_src  = bam_get_qual(bsrc);
-// 	uint8_t *qual_dest = bam_get_qual(bdest);
-// 	for (x = MAX(elt->start - STR_DIST, 0);
-// 	     x <= MIN(elt->end + STR_DIST, len-1);
-// 	     x++) {
-// 	    //qual_dest[x] = qual_src[x] | 0x80;
-// 	    qual_dest[x] = 11 | 0x80;
-// 	}
-// 
-// 	DL_DELETE(reps, elt);
-// 	free(elt);
-//     }    
-// 
-//     free(seq);
-// }
 
 int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	      bam_hdr_t *header, hts_itr_t *h_iter) {
@@ -1115,6 +1067,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
     pileup_cd cd;
     bam_sorted_list *bl = bam_sorted_list_new();
     bam_sorted_list *b_hist = bam_sorted_list_new();
+    int str_snp = (p->sSTR_add || p->sSTR_mul);
 
     cd.fp = in;
     cd.header = header;
@@ -1222,25 +1175,37 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 #endif
 	int left_most = n_plp ? plp[0].b->core.pos : 0;
 	for (i = 0; i < n_plp; i++) {
+	    int is_indel = (plp[i].indel || plp[i].is_del);
+
 	    // FIXME: only do this if the indel isn't VERY obvious.
 	    // Eg a pileup of 30 reads with 1 single read having an over or
 	    // under-call doesn't require full qualities.  We mainly need to
 	    // store the indel quals if the indel could be heterozygous or
 	    // a homozygous indel.
-	    if ((plp[i].indel || plp[i].is_del)
+	    if ((is_indel || (str_snp && preserve))
 		&& ((p->min_indel_A) ||
 		    (p->min_qual_B && sB < p->min_indel_B))) {
-		if (indel < ABS(plp[i].indel) + plp[i].is_del)
-		    indel = ABS(plp[i].indel) + plp[i].is_del;
 
-		mask_LC_regions(p, plp[i].b, pos, plp[i].qpos+1, &min_pos, &max_pos);
-		mask_LC_regions(p, plp[i].b, pos+indel, plp[i].qpos+1, &min_pos, &max_pos);
+		if (is_indel) {
+		    if (indel < ABS(plp[i].indel) + plp[i].is_del)
+			indel = ABS(plp[i].indel) + plp[i].is_del;
+		} else {
+		    indel = 1;
+		}
+
+		mask_LC_regions(p, is_indel, plp[i].b, pos, plp[i].qpos+1, &min_pos, &max_pos);
+		mask_LC_regions(p, is_indel, plp[i].b, pos+indel, plp[i].qpos+1, &min_pos, &max_pos);
 		if (min_pos > pos) min_pos = pos;
 		if (max_pos < pos) max_pos = pos;
 
 		// Extra growth, paranoia.
-		min_pos2 = pos - (pos-min_pos)*p->indel_scale;
-		max_pos2 = pos + (max_pos-pos)*p->indel_scale;
+		if (is_indel) {
+		    min_pos2 = MIN(min_pos2, pos - (pos-min_pos)*p->iSTR_mul);
+		    max_pos2 = MAX(max_pos2, pos + (max_pos-pos)*p->iSTR_mul);
+		} else {
+		    min_pos2 = MIN(min_pos2, pos - (pos-min_pos)*p->sSTR_mul);
+		    max_pos2 = MAX(max_pos2, pos + (max_pos-pos)*p->sSTR_mul);
+		}
 	    }
 
 	    //if (min_pos != INT_MAX || indel)
@@ -1261,13 +1226,13 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 		// !region query.
 		b2 = insert_bam_list(bl, bam_dup1(b))->b;
 
-		//mask_indels(b2);
 		//mask_clips(b2);
 		if (b->core.qual <= p->min_mqual) {
 		    int x;
 		    for (x = 0; x < b->core.l_qseq; x++)
 			bam_get_qual(b2)[x] |= 0x80;
 		}
+		
 	    } else {
 		b2 = bi->b;
 		bi = bi->s_next;
@@ -1295,48 +1260,19 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	    }
 	    if (min_pos != INT_MAX) { // or max_pos != 0; ie not reset yet
 		// not indel at this pos, but still in range.
-		//*qual = 22 | 0x80;
 		*qual = bam_get_qual(b)[plp[i].qpos] | 0x80;
 	    }
-
-#if 0
-	    if (plp[i].indel || plp[i].is_del) {
-//		mask_LC(b2, b, pos);
-//		fprintf(stderr, "Pos %d, indel = %d\n", pos, plp[i].indel);
-//		mask_LC(b2, b, pos+indel);
-		// mask_indels(b2);
-
-//		// Mark surrounding D bases
-//		int x, x_s = plp[i].qpos+1 - INDEL_DIST, x_e = plp[i].qpos+1 + INDEL_DIST;
-//		if (x_s < 0) x_s = 0;
-//		if (x_e >= b->core.l_qseq) x_e = b->core.l_qseq-1;
-//		for (x = x_s; x <= x_e; x++)
-//		    bam_get_qual(b2)[x] = bam_get_qual(b)[x] | 0x80;
-	    } else if (indel) {
-//		mask_LC(b2, b, pos);
-//		mask_LC(b2, b, pos+indel);
-
-//
-//		// Mark surrounding D/2 bases (or D?)
-//		// FIXME: ideally neither; compute low complexity extents.
-//		int x, x_s = plp[i].qpos+1 - INDEL_DIST/2, x_e = plp[i].qpos+1 + INDEL_DIST/2;
-//		if (x_s < 0) x_s = 0;
-//		if (x_e >= b->core.l_qseq) x_e = b->core.l_qseq-1;
-//		for (x = x_s; x <= x_e; x++)
-//		    bam_get_qual(b2)[x] = bam_get_qual(b)[x] | 0x80;
-	    }
-#endif
 
 	    if (preserve)
 		*qual |= 0x80;
 
 	    if (!(*qual & 0x80)) {
-		if (base == call1 || base == call2)
+		if (base == call1 || base == call2) {
 		    *qual = QH;
-		    //*qual = bin2[*qual];
-		else if (REDUCE_QUAL)
+		} else if (p->reduce_qual) {
 		    //*qual = QL;
 		    *qual = bin2[*qual];
+		}
 	    }
 	}
 
@@ -1362,6 +1298,30 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	    for (x = 0; x < b2->core.l_qseq; x++) {
 		if (qual[x] & 0x80)
 		    qual[x] &= ~0x80;
+	    }
+
+	    // Sliding window to not over-egg the pudding.
+	    // If a region of a read is obviously duff, then even if it
+	    // matches we should be cautious of over boosting the qual.
+	    // Instead we use binning instead, allowing lowering.
+	    if (0) {
+		int qa = 0;
+		bam1_t *b = plp[i].b;
+		uint8_t *qual_orig = bam_get_qual(b);
+		int WL = 10;
+		for (x = 0; x < WL && x < b->core.l_qseq; x++) {
+		    qa += qual_orig[x] < 15;
+		}
+		while (x < b->core.l_qseq-1) {
+		    if (qa >= 6) {
+			//memcpy(&qual[x-WL], &qual_orig[x-WL], WL);
+			int j;
+			for (j = x-WL; j < x; j++)
+			    qual[j] = bin2[qual_orig[j]];
+		    }
+		    qa -= qual_orig[x-WL] < 15;
+		    qa += qual_orig[x++] < 15;
+		}
 	    }
 
 	    uint64_t id = bi->id;
@@ -1423,8 +1383,8 @@ void usage(FILE *fp) {
 	    QM, QL, QH);
     fprintf(fp, "-m min_mqual      Keep qualities for seqs with mapping quality <= mqual [%d].\n", MIN_MQUAL);
     fprintf(fp, "-L bool           Whether mismatching bases can have qualities lowered [%d]\n", REDUCE_QUAL);
-    fprintf(fp, "-s indel_scale    Multiplicative factor applied to size of indel+STR [%.1f]\n", INDEL_SCALE);
-    fprintf(fp, "-R STR_dist       Additive factor applied to size of indel+STR [%d]\n", STR_DIST);
+    fprintf(fp, "-i STR_mul,add    Adjust indel size by (STR_size+add)*mul [%.1f,%d]\n", I_STR_MUL, I_STR_ADD);
+    fprintf(fp, "-s STR_mul,add    Adjust SNP size by (STR_size+add)*mul [%.1f,%d]\n", S_STR_MUL, S_STR_ADD);
     fprintf(fp, "-r region         Limit input to region chr:pos(-pos) []\n");
     fprintf(fp, "-t tag_list       Comma separated list of aux tags to keep []\n");
     fprintf(fp, "-T tag_list       Comma separated list of aux tags to discard []\n");
@@ -1451,7 +1411,7 @@ the bases adjusted to 'qual_lower' or 'qual_upper'.  Similarly for any high\n\
 quality indel.  An lower quality indel will causes neighbouring bases for\n\
 all sequences at that site to be kept, for the region as large as the indel\n\
 plus an extension along any short tandem repeats (STR), multiplied by \n\
-'indel_scale' plus an additional 'STR_dist'.\n");
+'indel_mult' plus an additional 'STR_add'.\n");
 }
 
 int main(int argc, char **argv) {
@@ -1464,8 +1424,10 @@ int main(int argc, char **argv) {
 
     cram_lossy_params params = {
 	.reduce_qual   = REDUCE_QUAL,       // -r
-	.STR_dist      = STR_DIST,          // -R
-	.indel_scale   = INDEL_SCALE,       // -s
+	.iSTR_mul      = I_STR_MUL,         // -i
+	.iSTR_add      = I_STR_ADD,         // -i
+	.sSTR_mul      = S_STR_MUL,         // -s
+	.sSTR_add      = S_STR_ADD,         // -s
 	.qlow          = QL,                // -l
 	.qcutoff       = QM,		    // -c
 	.qhigh         = QH,		    // -u
@@ -1481,7 +1443,7 @@ int main(int argc, char **argv) {
 	.region        = NULL,              // -r
     };
 
-    while ((opt = getopt(argc, argv, "I:O:q:d:x:Q:D:X:m:l:u:c:s:L:R:t:T:hr:")) != -1) {
+    while ((opt = getopt(argc, argv, "I:O:q:d:x:Q:D:X:m:l:u:c:i:L:s:t:T:hr:")) != -1) {
 	switch (opt) {
 	case 'I':
 	    hts_parse_format(&in_fmt, optarg);
@@ -1525,12 +1487,16 @@ int main(int argc, char **argv) {
 	    params.qcutoff = atoi(optarg);
 	    break;
 
-	case 's':
-	    params.indel_scale = atof(optarg);
+	case 'i':
+	    params.iSTR_mul = atof(optarg);
+	    if (strchr(optarg,','))
+		params.iSTR_add = atoi(strchr(optarg,',')+1);
 	    break;
 
-	case 'R':
-	    params.STR_dist = atoi(optarg);
+	case 's':
+	    params.sSTR_mul = atof(optarg);
+	    if (strchr(optarg,','))
+		params.sSTR_add = atoi(strchr(optarg,',')+1);
 	    break;
 
 	case 'L':
@@ -1564,6 +1530,22 @@ int main(int argc, char **argv) {
 	    return 1;
 	}
     }
+
+    printf("--- Crumble v%s: parameters ---\n", CRUMBLE_VERSION);
+    printf("reduce qual:   %s\n",     params.reduce_qual ? "yes" : "no");
+    printf("indel STR mul: %.2f\n",   params.iSTR_mul);
+    printf("indel STR add: %d\n",     params.iSTR_add);
+    printf("SNP   STR mul: %.2f\n",   params.sSTR_mul);
+    printf("SNP   STR add: %d\n",     params.sSTR_add);
+    printf("Qual low  1..%d -> %d\n", params.qcutoff, params.qlow);
+    printf("Qual high %d..  -> %d\n", params.qcutoff, params.qhigh);
+    printf("Keep if mqual <= %d\n",   params.min_mqual);
+    printf("Calls without mqual, keep qual if:\n");
+    printf("  SNP < %d,  indel < %d,  discrep > %.2f\n",
+	   params.min_qual_A, params.min_indel_A, params.min_discrep_A);
+    printf("Calls with mqual, keep qual if:\n");
+    printf("  SNP < %d,  indel < %d,  discrep > %.2f\n",
+	   params.min_qual_B, params.min_indel_B, params.min_discrep_B);
 
     init_bins(&params);
 
