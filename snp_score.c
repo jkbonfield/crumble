@@ -1472,7 +1472,7 @@ int main(int argc, char **argv) {
 	.region        = NULL,              // -r
     };
 
-    while ((opt = getopt(argc, argv, "O:q:d:x:Q:D:X:m:l:u:c:s:L:R:t:T:hr:")) != -1) {
+    while ((opt = getopt(argc, argv, "O:q:d:x:Q:D:X:m:l:u:c:s:L:R:t:T:hr:I:")) != -1) {
 	switch (opt) {
 	case 'I':
 	    hts_parse_format(&in_fmt, optarg);
