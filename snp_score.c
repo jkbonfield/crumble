@@ -767,6 +767,19 @@ bam_sorted_list *bam_sorted_list_new(void) {
     return bl;
 }
 
+void bam_sorted_list_destroy(bam_sorted_list *bl) {
+    if (!bl)
+	return;
+
+    bam_sorted_item *t, *n;
+    for (t = bl->s_head; t; t = n) {
+	n = t->s_next;
+	free(t);
+    }
+
+    free(bl);
+}
+
 bam_sorted_item *bam_sorted_item_new(void) {
     return calloc(1, sizeof(bam_sorted_item));
 }
@@ -862,6 +875,8 @@ void remove_bam_list(bam_sorted_list *bl, bam_sorted_item *ele) {
 	bl->s_tail = ele->s_prev;
 
     ele->s_prev = ele->s_next = NULL;
+
+    free(ele);
 }
 
 // Copied from htslib/sam.c.
@@ -1415,6 +1430,8 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
     flush_bam_list(p, b_hist, INT_MAX, out, header);
 
     bam_plp_destroy(p_iter);
+    bam_sorted_list_destroy(bl);
+    bam_sorted_list_destroy(b_hist);
 
     return 0;
 }
@@ -1682,6 +1699,12 @@ int main(int argc, char **argv) {
 	fprintf(stderr, "Error while closing output fd\n");
 	return 1;
     }
+
+    if (params.aux_whitelist)
+	kh_destroy(aux_exists, params.aux_whitelist);
+
+    if (params.aux_blacklist)
+	kh_destroy(aux_exists, params.aux_blacklist);
 
     fprintf(stderr, "A/B Diff    = %d\n", count_diff);
     fprintf(stderr, "A/B Indel   = %d / %d\n", count_indel_qual, count_indel); 
