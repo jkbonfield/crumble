@@ -1,6 +1,11 @@
+// FIXME: Add output of
+// %age of consensus bases as het that were preserved (-Q helper)
+// %age of indel bases that were preserved.
+// %age of columns preserved due to discrep score
+
 //#define DEBUG
 
-#define CRUMBLE_VERSION "0.2"
+#define CRUMBLE_VERSION "0.3"
 
 /*
  * Prunes quality based on snp calling score.
@@ -405,8 +410,23 @@ static inline double fast_exp(double y) {
 }
 #endif
 
+/*Taylor (deg 3) implementation of the log: http://www.flipcode.com/cgi-bin/fcarticles.cgi?show=63828*/
+inline float fast_log (float val)
+{
+   register int *const     exp_ptr = ((int*)&val);
+   register int            x = *exp_ptr;
+   register const int      log_2 = ((x >> 23) & 255) - 128;
+   x &= ~(255 << 23);
+   x += 127 << 23;
+   *exp_ptr = x;
+
+   val = ((-1.0f/3) * val + 2) * val - 2.0f/3;
+
+   return ((val + log_2)* 0.69314718);
+}
+
 //#define fast_exp exp
-#define fast_log log
+//#define fast_log log
 
 /*
  * As per calculate_consensus_bit_het but for a single pileup column.
@@ -417,7 +437,7 @@ int calculate_consensus_pileup(int flags,
 			       consensus_t *cons) {
     int i, j;
     static int init_done =0;
-    static double q2p[101];
+    static double q2p[101], mqual_pow[256];
     double min_e_exp = DBL_MIN_EXP * log(2) + 1;
 
     double S[15] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
@@ -443,6 +463,14 @@ int calculate_consensus_pileup(int flags,
 	for (i = 0; i <= 100; i++) {
 	    q2p[i] = pow(10, -i/10.0);
 	}
+
+	for (i = 0; i < 255; i++) {
+	    //mqual_pow[i] = 1-pow(10, -(i+.01)/10.0);
+	    //mqual_pow[i] = 1-pow(10, -(i/3+.1)/10.0);
+	    mqual_pow[i] = 1-pow(10, -(i/2+.05)/10.0);
+	}
+	// unknown mqual
+	mqual_pow[255] = mqual_pow[10];
     }
 
     /* Currently always needed for the N vs non-N evaluation */
@@ -487,13 +515,11 @@ int calculate_consensus_pileup(int flags,
 	// hamming distance to next best location.)
 
 	if (flags & CONS_MQUAL) {
-	    //double _p = 1-pow(10, -qual/10.0);
-	    //double _m = 1-pow(10, -(b->core.qual+.1)/10.0);
-	    double _p = 1-pow(10, -(qual/3+.1)/10.0);
-	    double _m = 1-pow(10, -(b->core.qual/3+.1)/10.0);
+	    double _p = mqual_pow[qual];
+	    double _m = mqual_pow[b->core.qual];
 
 	    //printf("%c %d -> %d, %f %f\n", "ACGT*N"[base], qual, (int)(-TENOVERLOG10 * log(1-(_m * _p + (1 - _m)/4))), _p, _m);
-	    qual = -TENOVERLOG10 * log(1-(_m * _p + (1 - _m)/4));
+	    qual = -TENOVERLOG10 * fast_log(1-(_m * _p + (1 - _m)/4));
 	}
 
 	// FIXME: try with and without modified qual and require both
@@ -1058,6 +1084,20 @@ void mask_LC_regions(cram_lossy_params *p, int is_indel, bam1_t *b,
     free(seq);
 }
 
+static int count_het_qual_A = 0;
+static int count_het_qual_B = 0;
+static int count_hom_qual_A = 0;
+static int count_hom_qual_B = 0;
+static int count_het_A = 0;
+static int count_het_B = 0;
+static int count_hom_A = 0;
+static int count_hom_B = 0;
+static int count_discrep_A = 0;
+static int count_discrep_B = 0;
+static int count_diff = 0;
+static int count_indel = 0;
+static int count_indel_qual = 0;
+
 int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	      bam_hdr_t *header, hts_itr_t *h_iter) {
     bam_plp_t p_iter;
@@ -1160,6 +1200,35 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	int sB = cons_g5_B.scores[6] > 0
 	    ? cons_g5_B.scores[6]
 	    : cons_g5_B.phred;
+
+	if (p->min_qual_A && p->min_qual_B && hA != hB) count_diff++;
+	if (p->min_qual_A) {
+	    if (cons_g5_A.scores[6] > 0) {
+		count_het_A++;
+		if (sA < p->min_qual_A)
+		    count_het_qual_A++;
+	    } else {
+		count_hom_A++;
+		if (sA < p->min_qual_A)
+		    count_hom_qual_A++;
+	    }
+	    if (cons_g5_A.discrep >= p->min_discrep_A)
+		count_discrep_A++;
+	}
+	if (p->min_qual_B) {
+	    if (cons_g5_B.scores[6] > 0) {
+		count_het_B++;
+		if (sB < p->min_qual_B)
+		    count_het_qual_B++;
+	    } else {
+		count_hom_B++;
+		if (sB < p->min_qual_B)
+		    count_hom_qual_B++;
+	    }
+	    if (cons_g5_B.discrep >= p->min_discrep_B)
+		count_discrep_B++;
+	}
+
 	preserve = ((p->min_qual_A && p->min_qual_B && hA != hB) ||
 		    (p->min_qual_A && sA < p->min_qual_A) ||
 		    (p->min_qual_B && sB < p->min_qual_B));
@@ -1174,17 +1243,20 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	}
 #endif
 	int left_most = n_plp ? plp[0].b->core.pos : 0;
+	int had_indel = 0, had_indel_Q = 0;
 	for (i = 0; i < n_plp; i++) {
 	    int is_indel = (plp[i].indel || plp[i].is_del);
 
-	    // FIXME: only do this if the indel isn't VERY obvious.
-	    // Eg a pileup of 30 reads with 1 single read having an over or
-	    // under-call doesn't require full qualities.  We mainly need to
-	    // store the indel quals if the indel could be heterozygous or
-	    // a homozygous indel.
+	    if (is_indel) had_indel++;
+
+	    // For indels, expand to cover low-complexity regions.
+	    // (Also for SNPs if required via -i option.)
+	    // -q0 or -Q0 (min_qual_A/B) disables that cons algorithm.
 	    if ((is_indel || (str_snp && preserve))
-		&& ((p->min_indel_A) ||
+		&& ((p->min_qual_A && sA < p->min_indel_A) ||
 		    (p->min_qual_B && sB < p->min_indel_B))) {
+
+		if (is_indel) had_indel_Q++;
 
 		if (is_indel) {
 		    if (indel < ABS(plp[i].indel) + plp[i].is_del)
@@ -1211,6 +1283,8 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	    //if (min_pos != INT_MAX || indel)
 	    //	fprintf(stderr, "%d..%d: Mask region = %d..%d\n", pos-1, pos+indel+1, min_pos, max_pos);
 	}
+	if (had_indel) count_indel++;
+	if (had_indel_Q) count_indel_qual++;
 
 	bam_sorted_item *bi = bl->s_head;
 	for (i = 0; i < n_plp; i++) {
@@ -1268,9 +1342,9 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 
 	    if (!(*qual & 0x80)) {
 		if (base == call1 || base == call2) {
-		    *qual = QH;
+		    *qual = p->qhigh;
 		} else if (p->reduce_qual) {
-		    //*qual = QL;
+		    //*qual = p->qlow;
 		    *qual = bin2[*qual];
 		}
 	    }
@@ -1540,12 +1614,20 @@ int main(int argc, char **argv) {
     printf("Qual low  1..%d -> %d\n", params.qcutoff, params.qlow);
     printf("Qual high %d..  -> %d\n", params.qcutoff, params.qhigh);
     printf("Keep if mqual <= %d\n",   params.min_mqual);
-    printf("Calls without mqual, keep qual if:\n");
-    printf("  SNP < %d,  indel < %d,  discrep > %.2f\n",
-	   params.min_qual_A, params.min_indel_A, params.min_discrep_A);
-    printf("Calls with mqual, keep qual if:\n");
-    printf("  SNP < %d,  indel < %d,  discrep > %.2f\n",
-	   params.min_qual_B, params.min_indel_B, params.min_discrep_B);
+    if (params.min_qual_A) {
+	printf("Calls without mqual, keep qual if:\n");
+	printf("  SNP < %d,  inndel < %d,  discrep > %.2f\n",
+	       params.min_qual_A, params.min_indel_A, params.min_discrep_A);
+    } else {
+	printf("Calls without mqual: disabled.\n");
+    }
+    if (params.min_qual_B) {
+	printf("Calls with mqual, keep qual if:\n");
+	printf("  SNP < %d,  indel < %d,  discrep > %.2f\n",
+	       params.min_qual_B, params.min_indel_B, params.min_discrep_B);
+    } else {
+	printf("Calls with mqual: disabled.\n");
+    }
 
     init_bins(&params);
 
@@ -1600,6 +1682,15 @@ int main(int argc, char **argv) {
 	fprintf(stderr, "Error while closing output fd\n");
 	return 1;
     }
+
+    fprintf(stderr, "A/B Diff    = %d\n", count_diff);
+    fprintf(stderr, "A/B Indel   = %d / %d\n", count_indel_qual, count_indel); 
+    fprintf(stderr, "A:  Het     = %d / %d\n", count_het_qual_A, count_het_A);
+    fprintf(stderr, "A:  Hom     = %d / %d\n", count_hom_qual_A, count_hom_A);
+    fprintf(stderr, "A:  Discrep = %d\n", count_discrep_A);
+    fprintf(stderr, "B:  Het     = %d / %d\n", count_het_qual_B, count_het_B);
+    fprintf(stderr, "B:  Hom     = %d / %d\n", count_hom_qual_B, count_hom_B);
+    fprintf(stderr, "B:  Discrep = %d\n", count_discrep_B);
 
     return 0;
 }
