@@ -1,8 +1,3 @@
-// FIXME: Add output of
-// %age of consensus bases as het that were preserved (-Q helper)
-// %age of indel bases that were preserved.
-// %age of columns preserved due to discrep score
-
 //#define DEBUG
 
 #define CRUMBLE_VERSION "0.3"
@@ -984,14 +979,32 @@ typedef struct {
     samFile *fp;
     bam_hdr_t *header;
     hts_itr_t *iter;
-    bam1_t *b_dup_list;
+    bam_sorted_list *bl;
+    bam1_t *b_unmap;
 } pileup_cd;
 
 int pileup_callback(void *vp, bam1_t *b) {
     pileup_cd *cd = (pileup_cd *)vp;
-    return (cd->iter)
+    int ret = (cd->iter)
 	? sam_itr_next(cd->fp, cd->iter, b)
 	: sam_read1(cd->fp, cd->header, b);
+
+    if (ret >= 0) {
+	// Unmapped chromosome => end of pileup.  Record the read we've
+	// already read and then feign EOF so we can handle these outside
+	// of the pileup interface.
+	if (b->core.tid == -1) {
+	    cd->b_unmap = bam_dup1(b);
+	    return -1;
+	}
+
+	// Otherwise insert it as it comes.  This includes "placed" but
+	// unmapped reads, so we can emit the unmapped data as part of
+	// pileup (normally it skips though for us).
+	insert_bam_list(cd->bl, bam_dup1(b));
+    }
+
+    return ret;
 }
 
 // Turns an absolute reference position into a relative query position within the seq.
@@ -1116,10 +1129,10 @@ static int count_indel_qual = 0;
 int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	      bam_hdr_t *header, hts_itr_t *h_iter) {
     bam_plp_t p_iter;
-    int tid, pos;
+    int tid, pos, last_tid = -2;
     int n_plp;
     const bam_pileup1_t *plp;
-    pileup_cd cd;
+    pileup_cd cd = {0};
     bam_sorted_list *bl = bam_sorted_list_new();
     bam_sorted_list *b_hist = bam_sorted_list_new();
     int str_snp = (p->sSTR_add || p->sSTR_mul);
@@ -1127,6 +1140,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
     cd.fp = in;
     cd.header = header;
     cd.iter = h_iter;
+    cd.bl = bl;
 
     p_iter = bam_plp_init(pileup_callback, &cd);
     int min_pos = INT_MAX, max_pos = 0;
@@ -1135,6 +1149,12 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
     while ((plp = bam_plp_auto(p_iter, &tid, &pos, &n_plp))) {
 	int i, preserve = 0, indel = 0;
 	unsigned char base;
+
+	if (tid != last_tid) {
+	    // Ensure b_hist is only per chromosome
+	    flush_bam_list(p, b_hist, INT_MAX, out, header);
+	    last_tid = tid;
+	}
 
 	if (pos > max_pos2) {
 	    min_pos2 = min_pos = INT_MAX;
@@ -1305,30 +1325,33 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	for (i = 0; i < n_plp; i++) {
 	    // b is unedited bam in pileup.
 	    // b2 is edited bam in bam_sorted_list, for output
-	    bam1_t *b = plp[i].b, *b2;
+	    bam1_t *b = plp[i].b, *b2 = NULL;
 	    uint8_t *qual;
 
-	    // At start, mark indel bases.
-	    // Similarly low mqual if desired.
-	    if (plp[i].is_head || !bi) {
-		// !bi because we're maybe starting part way through due to a
-		// !region query.
-		b2 = insert_bam_list(bl, bam_dup1(b))->b;
+	    assert(bi);
 
+	    // Punt any unmapped data onto b_hist list
+	    while (bi->b->core.flag & BAM_FUNMAP) {
+		bam_sorted_item *next = bi->s_next;
+		insert_bam_list_id(b_hist, bi->b, bi->id);
+		remove_bam_list(bl, bi);
+		bi = next;
+	    }
+	    b2 = bi->b;
+	    bi = bi->s_next;
+
+	    // Assert b2 & b are same object.
+	    assert(b2 && strcmp(bam_get_qname(b), bam_get_qname(b2)) == 0);
+
+	    // First time for this seq, handle low mqual if desired.
+	    if (plp[i].is_head) {
 		//mask_clips(b2);
 		if (b->core.qual <= p->min_mqual) {
 		    int x;
 		    for (x = 0; x < b->core.l_qseq; x++)
 			bam_get_qual(b2)[x] |= 0x80;
 		}
-		
-	    } else {
-		b2 = bi->b;
-		bi = bi->s_next;
 	    }
-
-	    // Assert b2 & b are same object.
-	    assert(strcmp(bam_get_qname(b), bam_get_qname(b2)) == 0);
 
 	    qual = &bam_get_qual(b2)[plp[i].qpos];
 	    base = bam_seqi(bam_get_seq(b), plp[i].qpos);
@@ -1374,7 +1397,6 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	bi = bl->s_head;
 	for (i = 0; i < n_plp; i++) {
 	    bam1_t *b2 = bi->b;
-
 	    uint8_t *qual = bam_get_qual(b2);
 
 	    if (!plp[i].is_tail) {
@@ -1427,7 +1449,30 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	flush_bam_list(p, b_hist, left_most, out, header);
     }
 
+    // Handle any in-flight reads that haven't yet finished as pileup
+    // was called with a range and we've terminated the pileup iterator.
+    bam_sorted_item *bi = bl->s_head;
+    while (bi) {
+	bam_sorted_item *next = bi->s_next;
+	insert_bam_list_id(b_hist, bi->b, bi->id);
+	remove_bam_list(bl, bi);
+	bi = next;
+    }
+
     flush_bam_list(p, b_hist, INT_MAX, out, header);
+
+    // Handle trailing unmapped reads
+    if (cd.b_unmap) {
+	int ret;
+	sam_write1(out, header, cd.b_unmap);
+
+	while ((ret = cd.iter
+		? sam_itr_next(cd.fp, cd.iter, cd.b_unmap)
+		: sam_read1(cd.fp, cd.header, cd.b_unmap)) >= 0)
+	    sam_write1(out, header, cd.b_unmap);
+
+	bam_destroy1(cd.b_unmap);
+    }
 
     bam_plp_destroy(p_iter);
     bam_sorted_list_destroy(bl);
@@ -1633,7 +1678,7 @@ int main(int argc, char **argv) {
     printf("Keep if mqual <= %d\n",   params.min_mqual);
     if (params.min_qual_A) {
 	printf("Calls without mqual, keep qual if:\n");
-	printf("  SNP < %d,  inndel < %d,  discrep > %.2f\n",
+	printf("  SNP < %d,  indel < %d,  discrep > %.2f\n",
 	       params.min_qual_A, params.min_indel_A, params.min_discrep_A);
     } else {
 	printf("Calls without mqual: disabled.\n");
