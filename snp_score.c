@@ -813,9 +813,12 @@ bam_sorted_item *insert_bam_list2(bam_sorted_list *bl, bam_sorted_item *ele) {
 
     // start coord. l/r will be left/right of b
     l = bl->s_tail; r = NULL;
-    while (l && l->b->core.pos > b->core.pos)
+    while (l && b->core.tid != -1 &&
+	   (l->b->core.tid > b->core.tid ||
+	    (l->b->core.tid == b->core.tid && l->b->core.pos > b->core.pos)))
 	r = l, l = l->s_prev;
-    while (l && l->b->core.pos == b->core.pos && l->id > ele->id)
+    while (l && l->b->core.tid == b->core.tid &&
+	   l->b->core.pos == b->core.pos && l->id > ele->id)
 	r = l, l = l->s_prev;
     ele->s_prev = l;
     ele->s_next = r;
