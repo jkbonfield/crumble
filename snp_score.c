@@ -934,6 +934,13 @@ void flush_bam_list(cram_lossy_params *p, bam_sorted_list *bl,
 
 	purge_tags(p, bi->b);
 
+	// Correct qualities
+	int x;
+	uint8_t *qual = bam_get_qual(bi->b);
+	for (x = 0; x < bi->b->core.l_qseq; x++) {
+	    if (qual[x] & 0x80)
+		qual[x] &= ~0x80;
+	}
 	sam_write1(out, header, bi->b);
 	bam_destroy1(bi->b);
 	remove_bam_list(bl, bi);
@@ -1135,6 +1142,8 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	    // Ensure b_hist is only per chromosome
 	    flush_bam_list(p, b_hist, INT_MAX, out, header);
 	    last_tid = tid;
+	    min_pos = INT_MAX, max_pos = 0;
+	    min_pos2 = INT_MAX, max_pos2 = 0;
 	}
 
 	if (pos > max_pos2) {
@@ -1327,8 +1336,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	    }
 
 	    qual = &bam_get_qual(b2)[plp[i].qpos];
-	    base = bam_seqi(bam_get_seq(b), plp[i].qpos)
-;
+	    base = bam_seqi(bam_get_seq(b), plp[i].qpos);
 #ifdef DEBUG
 	    putchar(seq_nt16_str[base]);
 #endif
@@ -1379,19 +1387,12 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 		continue;
 	    }
 
-	    // Correct qualities
-	    int x;
-	    for (x = 0; x < b2->core.l_qseq; x++) {
-		if (qual[x] & 0x80)
-		    qual[x] &= ~0x80;
-	    }
-
 	    // Sliding window to not over-egg the pudding.
 	    // If a region of a read is obviously duff, then even if it
 	    // matches we should be cautious of over boosting the qual.
 	    // Instead we use binning instead, allowing lowering.
 	    if (0) {
-		int qa = 0;
+		int qa = 0, x;
 		bam1_t *b = plp[i].b;
 		uint8_t *qual_orig = bam_get_qual(b);
 		int WL = 10;
@@ -1737,4 +1738,3 @@ int main(int argc, char **argv) {
 
     return 0;
 }
-                                                                                                                                                                                                                                                            
