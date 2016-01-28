@@ -752,6 +752,7 @@ typedef struct bam_sorted_item {
 
 typedef struct bam_sorted_list {
     bam_sorted_item *s_head, *s_tail; // start coord
+    bam_sorted_item *s_last;
 } bam_sorted_list;
 
 bam_sorted_list *bam_sorted_list_new(void) {
@@ -811,8 +812,19 @@ bam_sorted_item *insert_bam_list2(bam_sorted_list *bl, bam_sorted_item *ele) {
     bam_sorted_item *l, *r;
     bam1_t *b = ele->b;
 
-    // start coord. l/r will be left/right of b
-    l = bl->s_tail; r = NULL;
+    // Chain right from last
+    l = bl->s_last;
+    while (l &&
+	   b->core.tid == l->b->core.tid &&
+	   b->core.pos <= l->b->core.pos)
+	l = l->s_next;
+
+    if (l) {
+	r = l->s_next;
+    } else {
+	l = bl->s_tail; r = NULL;
+    }
+
     while (l && b->core.tid != -1 &&
 	   (l->b->core.tid > b->core.tid ||
 	    (l->b->core.tid == b->core.tid && l->b->core.pos > b->core.pos)))
@@ -822,6 +834,8 @@ bam_sorted_item *insert_bam_list2(bam_sorted_list *bl, bam_sorted_item *ele) {
 	r = l, l = l->s_prev;
     ele->s_prev = l;
     ele->s_next = r;
+
+    bl->s_last = ele;
 
     if (l)
 	l->s_next = ele;
@@ -873,6 +887,9 @@ void remove_bam_list(bam_sorted_list *bl, bam_sorted_item *ele) {
 	bl->s_tail = ele->s_prev;
 
     ele->s_prev = ele->s_next = NULL;
+
+    if (bl->s_last == ele)
+	bl->s_last = NULL;
 
     free(ele);
 }
