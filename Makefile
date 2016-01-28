@@ -10,7 +10,7 @@ HTSLIB = $(HTSDIR)/libhts.a
 INCLUDES=-I$(HTSDIR)/include -I$(HTSDIR)
 LIBS=-L$(HTSDIR)/lib -L$(HTSDIR) -lhts -Wl,--rpath,$(HTSDIR)/lib -Wl,--rpath,$(HTSDIR) -lpthread -lz -lm -ldl 
 #CFLAGS=-g -Wall -Werror
-CFLAGS=-O3 -Wall
+CFLAGS=-O3 -g -Wall
 
 .c.o:
 	$(CC) $(CFLAGS) $(INCLUDES) -c $<

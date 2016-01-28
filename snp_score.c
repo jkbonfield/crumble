@@ -1146,6 +1146,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
     cd.bl = bl;
 
     p_iter = bam_plp_init(pileup_callback, &cd);
+    bam_plp_set_maxcnt(p_iter, INT_MAX);
     int min_pos = INT_MAX, max_pos = 0;
     int min_pos2 = INT_MAX, max_pos2 = 0;
 
