@@ -85,6 +85,7 @@
 #include <htslib/khash.h>
 
 #include "str_finder.h"
+#include "tree.h"
 
 #ifndef MIN
 #define MIN(a,b) ((a)<(b)?(a):(b))
@@ -738,39 +739,53 @@ int calculate_consensus_pileup(int flags,
 }
 
 //-----------------------------------------------------------------------------
-// Doubly-sorted list of bam sequences
+// Tree of bam objects, sorted by chromosome & position
 
-// Sorted list of bam1_t objects.
-// These are doubly linked lists sorted on both start and end coords
-// to permit quick updating.
 typedef struct bam_sorted_item {
-    struct bam_sorted_item *s_next, *s_prev; // sorted by start coord
+    RB_ENTRY(bam_sorted_item) link;
     bam1_t *b;
     uint64_t id;
     int end_pos;
 } bam_sorted_item;
 
-typedef struct bam_sorted_list {
-    bam_sorted_item *s_head, *s_tail; // start coord
-    bam_sorted_item *s_last;
-} bam_sorted_list;
+RB_HEAD(bam_sort, bam_sorted_item);
+
+typedef struct bam_sort bam_sorted_list;
+
+static int bam_item_cmp(bam_sorted_item *b1, bam_sorted_item *b2) {
+    int d;
+    if (b2->b->core.tid == -1)
+	return -1;
+    if ((d = b1->b->core.tid - b2->b->core.tid))
+	return d;
+    if ((d = b1->b->core.pos - b2->b->core.pos))
+	return d;
+    return b1->id - b2->id;
+}
+
+RB_PROTOTYPE(bam_sort, bam_sorted_item, link, bam_item_cmp);
+RB_GENERATE(bam_sort, bam_sorted_item, link, bam_item_cmp);
 
 bam_sorted_list *bam_sorted_list_new(void) {
     bam_sorted_list *bl = calloc(1, sizeof(bam_sorted_list));
     if (!bl)
-	return NULL;
-	
+        return NULL;
+        
+    RB_INIT(bl);
+
     return bl;
 }
 
 void bam_sorted_list_destroy(bam_sorted_list *bl) {
+    bam_sorted_item *node, *next;
+    
     if (!bl)
-	return;
+        return;
 
-    bam_sorted_item *t, *n;
-    for (t = bl->s_head; t; t = n) {
-	n = t->s_next;
-	free(t);
+    for (node = RB_MIN(bam_sort, bl); node; node = next) {
+	next = RB_NEXT(bam_sort, bl, node);
+	RB_REMOVE(bam_sort, bl, node);
+	free(node);
     }
 
     free(bl);
@@ -780,76 +795,15 @@ bam_sorted_item *bam_sorted_item_new(void) {
     return calloc(1, sizeof(bam_sorted_item));
 }
 
-#ifdef DEBUG
-// Slow debugging function
-void validate_bam_list(bam_sorted_list *bl) {
-    bam_sorted_item *t, *l;
-
-    t = bl->s_head;
-    l = NULL;
-    while (t) {
-	if (t->s_next)
-	    assert(t->s_next->s_prev == t);
-	if (t->s_prev)
-	    assert(t->s_prev->s_next == t);
-	assert(!l || t->b->core.pos >= l->b->core.pos);
-	l = t;
-	t = t->s_next;
-    }
-    assert(bl->s_tail == l);
-}
-#endif
-
 /*
  * Inserts a bam structure into the bam_sorted_list, in positional
- * order.  Assumes data arrives in (start) positional order for
- * efficiency, but still works if this is not true.
+ * order. 
  *
  * Returns the newly created bam_sorted_list element on success.
  *         NULL on failure.
  */
 bam_sorted_item *insert_bam_list2(bam_sorted_list *bl, bam_sorted_item *ele) {
-    bam_sorted_item *l, *r;
-    bam1_t *b = ele->b;
-
-    // Chain right from last
-    l = bl->s_last;
-    while (l &&
-	   b->core.tid == l->b->core.tid &&
-	   b->core.pos <= l->b->core.pos)
-	l = l->s_next;
-
-    if (l) {
-	r = l->s_next;
-    } else {
-	l = bl->s_tail; r = NULL;
-    }
-
-    while (l && b->core.tid != -1 &&
-	   (l->b->core.tid > b->core.tid ||
-	    (l->b->core.tid == b->core.tid && l->b->core.pos > b->core.pos)))
-	r = l, l = l->s_prev;
-    while (l && l->b->core.tid == b->core.tid &&
-	   l->b->core.pos == b->core.pos && l->id > ele->id)
-	r = l, l = l->s_prev;
-    ele->s_prev = l;
-    ele->s_next = r;
-
-    bl->s_last = ele;
-
-    if (l)
-	l->s_next = ele;
-    else
-	bl->s_head = ele;
-
-    if (r)
-	r->s_prev = ele;
-    else
-	bl->s_tail = ele;
-
-#ifdef DEBUG
-    validate_bam_list(bl);
-#endif
+    RB_INSERT(bam_sort, bl, ele);
 
     return ele;
 }
@@ -875,25 +829,12 @@ bam_sorted_item *insert_bam_list(bam_sorted_list *bl, bam1_t *b) {
  * Removes an item from the bam_sorted_list.
  */
 void remove_bam_list(bam_sorted_list *bl, bam_sorted_item *ele) {
-    // Start coord
-    if (ele->s_prev)
-	ele->s_prev->s_next = ele->s_next;
-    else
-	bl->s_head = ele->s_next;
-
-    if (ele->s_next)
-	ele->s_next->s_prev = ele->s_prev;
-    else
-	bl->s_tail = ele->s_prev;
-
-    ele->s_prev = ele->s_next = NULL;
-
-    if (bl->s_last == ele)
-	bl->s_last = NULL;
+    RB_REMOVE(bam_sort, bl, ele);
 
     free(ele);
 }
 
+//-----------------------------------------------------------------------------
 // Copied from htslib/sam.c.
 // TODO: we need a proper interface to find the length of an aux tag,
 // or at the very make exportable versions of these in htslib.
@@ -974,12 +915,20 @@ void purge_tags(cram_lossy_params *settings, bam1_t *b) {
     }
 }
 
+//-----------------------------------------------------------------------------
 void flush_bam_list(cram_lossy_params *p, bam_sorted_list *bl,
 		    int before, samFile *out, bam_hdr_t *header) {
-    bam_sorted_item *bi_next = NULL, *bi;
-    for (bi = bl->s_head; bi; bi = bi_next) {
-	bi_next = bi->s_next;
+    bam_sorted_item *bi, *next;
 
+    // Sanity check
+    int last_pos = 0;
+    RB_FOREACH(bi, bam_sort, bl) {
+	assert(bi->b->core.pos >= last_pos);
+	last_pos = bi->b->core.pos >= last_pos;
+    }
+
+    for (bi = RB_MIN(bam_sort, bl); bi; bi = next) {
+	next = RB_NEXT(bam_sort, bl, bi);
 	if (bi->end_pos >= before)
 	    break;
 
@@ -999,7 +948,7 @@ typedef struct {
     samFile *fp;
     bam_hdr_t *header;
     hts_itr_t *iter;
-    bam_sorted_list *bl;
+    bam_sorted_list *bl, *b_hist;
     bam1_t *b_unmap;
 } pileup_cd;
 
@@ -1018,10 +967,8 @@ int pileup_callback(void *vp, bam1_t *b) {
 	    return -1;
 	}
 
-	// Otherwise insert it as it comes.  This includes "placed" but
-	// unmapped reads, so we can emit the unmapped data as part of
-	// pileup (normally it skips though for us).
-	insert_bam_list(cd->bl, bam_dup1(b));
+	insert_bam_list(b->core.flag & BAM_FUNMAP ? cd->b_hist : cd->bl,
+			bam_dup1(b));
     }
 
     return ret;
@@ -1156,11 +1103,13 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
     bam_sorted_list *bl = bam_sorted_list_new();
     bam_sorted_list *b_hist = bam_sorted_list_new();
     int str_snp = (p->sSTR_add || p->sSTR_mul);
+    int counter = 0;
 
     cd.fp = in;
     cd.header = header;
     cd.iter = h_iter;
     cd.bl = bl;
+    cd.b_hist = b_hist;
 
     p_iter = bam_plp_init(pileup_callback, &cd);
     bam_plp_set_maxcnt(p_iter, INT_MAX);
@@ -1170,6 +1119,17 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
     while ((plp = bam_plp_auto(p_iter, &tid, &pos, &n_plp))) {
 	int i, preserve = 0, indel = 0;
 	unsigned char base;
+	int left_most = n_plp ? plp[0].b->core.pos : 0;
+
+	if (n_plp > 10000) {
+	    fprintf(stderr, "Excessive depth at tid %d, pos %d, depth %d\n", tid, pos, n_plp);
+	    goto too_deep;
+	}
+
+	if (counter++ == 100000) {
+	    fprintf(stderr, "Tid %d\tPos %d\n", tid, pos);
+	    counter = 0;
+	}
 
 	if (tid != last_tid) {
 	    // Ensure b_hist is only per chromosome
@@ -1298,7 +1258,6 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	    printf("\t");
 	}
 #endif
-	int left_most = n_plp ? plp[0].b->core.pos : 0;
 	int had_indel = 0, had_indel_Q = 0;
 	for (i = 0; i < n_plp; i++) {
 	    int is_indel = (plp[i].indel || plp[i].is_del);
@@ -1342,7 +1301,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	if (had_indel) count_indel++;
 	if (had_indel_Q) count_indel_qual++;
 
-	bam_sorted_item *bi = bl->s_head;
+	bam_sorted_item *bi = RB_MIN(bam_sort, bl);
 	for (i = 0; i < n_plp; i++) {
 	    // b is unedited bam in pileup.
 	    // b2 is edited bam in bam_sorted_list, for output
@@ -1351,15 +1310,8 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 
 	    assert(bi);
 
-	    // Punt any unmapped data onto b_hist list
-	    while (bi->b->core.flag & BAM_FUNMAP) {
-		bam_sorted_item *next = bi->s_next;
-		insert_bam_list_id(b_hist, bi->b, bi->id);
-		remove_bam_list(bl, bi);
-		bi = next;
-	    }
 	    b2 = bi->b;
-	    bi = bi->s_next;
+	    bi = RB_NEXT(bam_sort, bl, bi);
 
 	    // Assert b2 & b are same object.
 	    assert(b2 && strcmp(bam_get_qname(b), bam_get_qname(b2)) == 0);
@@ -1375,8 +1327,8 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	    }
 
 	    qual = &bam_get_qual(b2)[plp[i].qpos];
-	    base = bam_seqi(bam_get_seq(b), plp[i].qpos);
-
+	    base = bam_seqi(bam_get_seq(b), plp[i].qpos)
+;
 #ifdef DEBUG
 	    putchar(seq_nt16_str[base]);
 #endif
@@ -1413,15 +1365,17 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	printf("\n");
 #endif
 
+    too_deep:
+
 	// Push any finished sequence to the b_hist list,
 	// clearing the qual mask bit as we go.
-	bi = bl->s_head;
+	bi = RB_MIN(bam_sort, bl);
 	for (i = 0; i < n_plp; i++) {
 	    bam1_t *b2 = bi->b;
 	    uint8_t *qual = bam_get_qual(b2);
 
 	    if (!plp[i].is_tail) {
-		bi = bi->s_next;
+		bi = RB_NEXT(bam_sort, bl, bi);
 		continue;
 	    }
 
@@ -1457,7 +1411,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	    }
 
 	    uint64_t id = bi->id;
-	    bam_sorted_item *next = bi->s_next;
+	    bam_sorted_item *next = RB_NEXT(bam_sort, bl, bi);
 	    remove_bam_list(bl, bi);
 	    bi = next;
 
@@ -1472,9 +1426,9 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 
     // Handle any in-flight reads that haven't yet finished as pileup
     // was called with a range and we've terminated the pileup iterator.
-    bam_sorted_item *bi = bl->s_head;
+    bam_sorted_item *bi = RB_MIN(bam_sort, bl);
     while (bi) {
-	bam_sorted_item *next = bi->s_next;
+	bam_sorted_item *next = RB_NEXT(bam_sort, bl, bi);
 	insert_bam_list_id(b_hist, bi->b, bi->id);
 	remove_bam_list(bl, bi);
 	bi = next;
@@ -1783,3 +1737,4 @@ int main(int argc, char **argv) {
 
     return 0;
 }
+                                                                                                                                                                                                                                                            
