@@ -96,8 +96,10 @@ static void add_rep(rep_ele **list, char *cons, int clen, int pos, int rlen,
 	    }
 	}
 
-	if (!lc)
+	if (!lc) {
+	    free(el);
 	    return;
+	}
     }
 
     // Remove any older items on the list that are entirely contained within el
@@ -265,8 +267,7 @@ char *cons_mark_STR(char *cons, int len, int lower_only) {
 #ifdef TEST_MAIN
 int main(int argc, char **argv) {
     rep_ele *reps, *elt, *tmp;
-    char *str;
-    int i, len = strlen(argv[1]), pos = -1;
+    int len = strlen(argv[1]), pos = -1;
     if (argc > 2) pos = atoi(argv[2]);
 
     reps = find_STR(argv[1], len, 0);
@@ -286,6 +287,8 @@ int main(int argc, char **argv) {
 	free(elt);
     }
 
+    //char *str;
+    //int i;
     //str = cons_mark_STR(argv[1], len, 1);
     //for (i = 0; i < len; i++) {
     //	printf("%3d %c %d\n", i, argv[1][i], str[i]);
@@ -305,8 +308,13 @@ static unsigned char *load(uint64_t *lenp) {
 
     do {
 	if (dsize - dcurr < BS) {
+	    unsigned char *tmp;
 	    dsize = dsize ? dsize * 2 : BS;
-	    data = realloc(data, dsize);
+	    if (!(tmp = realloc(data, dsize))) {
+		free(data);
+		return NULL;
+	    }
+	    data = tmp;
 	}
 
 	len = read(0, data + dcurr, BS);
@@ -325,7 +333,7 @@ static unsigned char *load(uint64_t *lenp) {
 int main(int argc, char **argv) {
     rep_ele *reps, *elt, *tmp;
     char *str;
-    uint64_t i, in_len;
+    uint64_t in_len;
     int count = 0;
 
     str = load(&in_len);
@@ -342,8 +350,9 @@ int main(int argc, char **argv) {
 
     printf("Found %d reps\n", count);
 
-    //str = cons_mark_STR(argv[1], len, 1);
-    //for (i = 0; i < len; i++) {
+    //uint64_t i;
+    //str = cons_mark_STR(argv[1], in_len, 1);
+    //for (i = 0; i < in_len; i++) {
     //	printf("%3d %c %d\n", i, argv[1][i], str[i]);
     //}
 
