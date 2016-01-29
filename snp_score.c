@@ -1439,13 +1439,13 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 
     // Handle trailing unmapped reads
     if (cd.b_unmap) {
-	int ret;
-	sam_write1(out, header, cd.b_unmap);
-
-	while ((ret = cd.iter
-		? sam_itr_next(cd.fp, cd.iter, cd.b_unmap)
-		: sam_read1(cd.fp, cd.header, cd.b_unmap)) >= 0)
+	do {
+	    purge_tags(p, cd.b_unmap);
 	    sam_write1(out, header, cd.b_unmap);
+
+	} while ((cd.iter
+		  ? sam_itr_next(cd.fp, cd.iter, cd.b_unmap)
+		  : sam_read1(cd.fp, cd.header, cd.b_unmap)) >= 0);
 
 	bam_destroy1(cd.b_unmap);
     }
