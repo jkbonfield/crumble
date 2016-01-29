@@ -924,7 +924,7 @@ void flush_bam_list(cram_lossy_params *p, bam_sorted_list *bl,
     int last_pos = 0;
     RB_FOREACH(bi, bam_sort, bl) {
 	assert(bi->b->core.pos >= last_pos);
-	last_pos = bi->b->core.pos >= last_pos;
+	last_pos = bi->b->core.pos;
     }
 
     for (bi = RB_MIN(bam_sort, bl); bi; bi = next) {
@@ -1128,6 +1128,14 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	unsigned char base;
 	int left_most = n_plp ? plp[0].b->core.pos : 0;
 
+	if (tid != last_tid) {
+	    // Ensure b_hist is only per chromosome
+	    flush_bam_list(p, b_hist, INT_MAX, out, header);
+	    last_tid = tid;
+	    min_pos = INT_MAX, max_pos = 0;
+	    min_pos2 = INT_MAX, max_pos2 = 0;
+	}
+
 	if (n_plp > 10000) {
 	    fprintf(stderr, "Excessive depth at tid %d, pos %d, depth %d\n", tid, pos, n_plp);
 	    goto too_deep;
@@ -1136,14 +1144,6 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	if (counter++ == 100000) {
 	    fprintf(stderr, "Tid %d\tPos %d\n", tid, pos);
 	    counter = 0;
-	}
-
-	if (tid != last_tid) {
-	    // Ensure b_hist is only per chromosome
-	    flush_bam_list(p, b_hist, INT_MAX, out, header);
-	    last_tid = tid;
-	    min_pos = INT_MAX, max_pos = 0;
-	    min_pos2 = INT_MAX, max_pos2 = 0;
 	}
 
 	if (pos > max_pos2) {
