@@ -35,9 +35,9 @@ $bcftools stats -s- $truth $prefix.freebayes.norm.vcf.gz > $prefix.freebayes.sta
 #-----------------------------------------------------------------------------
 # With samtools; better on SNPs
 
-($samtools mpileup -m 2 -p -F 0.1 -g -f $ref $bam | $bcftools call -vmO z -o $prefix.vcf.gz
-#$bcftools mpileup -m 2 -p -F 0.1 -g -f $ref $bam | $bcftools call -vmO z -o $prefix.vcf.gz
-$bcftools norm -f $ref $prefix.vcf.gz | $bgzip > $prefix.samtools.norm.vcf.gz
+($samtools mpileup -m 2 -p -F 0.1 -gu -f $ref $bam | $bcftools call -vmO v | $bcftools norm -f $ref | bgzip > $prefix.samtools.norm.vcf.gz
+#$bcftools mpileup -m 2 -p -F 0.1 -gu -f $ref $bam | $bcftools call -vmO z -o $prefix.vcf.gz
+#$bcftools norm -f $ref $prefix.vcf.gz | $bgzip > $prefix.samtools.norm.vcf.gz
 $bcftools index $prefix.samtools.norm.vcf.gz
 $bcftools stats -s- $truth $prefix.samtools.norm.vcf.gz > $prefix.samtools.stats) &
 

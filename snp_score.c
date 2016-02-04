@@ -1,3 +1,52 @@
+// Various extra heuristics for storing qualities.  The general rule
+// of thumb is that if we think the alignment is suspect in some way
+// then we need to keep all the qualities so that it can be remapped
+// to a new place.  Consider migration from GRCh37 to h38 - even if it
+// has high mapping quality in GRCh37, if we can detect something
+// suspicious then we preserve our accuracy when we subsequently
+// remap.
+//
+// Additionally we may be able to generate a bed file showing regions
+// that shouldn't be considered as high quality for snp/indel
+// calling.
+
+
+// TODO: excessive depth => mismapped. (keep quals) Eg
+// 16:46393052
+
+// TODO: More than 2 haplotypes for 1 single sample. 
+// 1:142537663 (Also extra deep)
+// 1:8404952
+// 17:22251551
+
+// TODO: Prevelance of lots of low mapping quality may mean other
+// high quality reads should also be considered low mapping quality?
+// (But perhaps only if they're not softclipped.)  Lack of
+// soft-clipping implies collapsed repeat, so casts doubt on all data.
+// DONE: need to test
+// 1:8404952
+
+// TODO: Concordant soft-clip detection
+// Regions with lots of soft-clip that aligns well against each other
+// indicate a large insertion or possibly an expanded repeat.  These
+// sometimes give rise to fake SNPs.
+// [Less complex solution, count %age of reads with clip-point larger
+// than a specific length at a specific site. If > X then preserve all
+// reads with a clip point at that site (regardless of length).  Or
+// all reads, not just those with soft-clip?]
+// 1:231337816
+// 18:312676
+// X:104252683
+
+// TODO: Insertion concordance.
+// This is hard to do with samtools pileup as we only get ref by ref
+// rather than consensus by consensus, but if there is a lot of
+// variance between the inserted bases then it implies we have suspect
+// alignments.
+// DONE: Trivial implementation is simply length concordance; if there
+// are many different lengths then it's probably suspect.
+
+
 //#define DEBUG
 
 #define CRUMBLE_VERSION "0.4"
@@ -36,6 +85,7 @@
  */
 
 // Default params
+#define MAX_DEPTH 20000
 
 #define QL 10
 #define QM 25 // below => QL, else QH
@@ -69,8 +119,29 @@
 #define I_STR_ADD 2
 #define S_STR_ADD 0
 
-//#define MIN_QUAL 30
-//#define MIN_INDEL 50
+#if 1
+// Prevalence of low mapping quality, > PERC => store all
+// Lower => larger files
+#define LOW_MQUAL_PERC 0.3
+
+// Amount of variable sized insertion
+#define INS_LEN_PERC 0.1
+
+// Percentage of seqs with large soft-clips
+#define CLIP_PERC 0.2
+
+// Amount of over-depth to consider this as as suspect region
+#define OVER_DEPTH 3
+
+#else
+// Essentially disables these features
+#define LOW_MQUAL_PERC 99.0
+#define INS_LEN_PERC 99.0
+#define CLIP_PERC 99.0
+#define OVER_DEPTH 9999
+#endif
+
+#define BED_DIST 50
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -123,8 +194,11 @@ typedef struct {
     // Tag white/black lists
     auxhash_t aux_whitelist;
     auxhash_t aux_blacklist;
-} cram_lossy_params;
 
+    double low_mqual_perc;
+    FILE *bed_fp;
+    int verbose;
+} cram_lossy_params;
 
 //-----------------------------------------------------------------------------
 // Binning
@@ -494,6 +568,7 @@ int calculate_consensus_pileup(int flags,
 	uint8_t base = bam_seqi(bam_get_seq(b), p[n].qpos);
 	uint8_t qual = bam_get_qual(b)[p[n].qpos];
 	const int stech = STECH_SOLEXA;
+
 	// =ACM GRSV TWYH KDBN
 	static int L[16] = {
 	    5,0,1,5, 2,5,5,5, 3,5,5,5, 5,5,5,5
@@ -517,9 +592,6 @@ int calculate_consensus_pileup(int flags,
 	    //printf("%c %d -> %d, %f %f\n", "ACGT*N"[base], qual, (int)(-TENOVERLOG10 * log(1-(_m * _p + (1 - _m)/4))), _p, _m);
 	    qual = -TENOVERLOG10 * fast_log(1-(_m * _p + (1 - _m)/4));
 	}
-
-	// FIXME: try with and without modified qual and require both
-	// to be certain. Discrepancy between them implies suspect calling?
 
 	/* Quality 0 should never be permitted as it breaks the math */
 	if (qual < 1)
@@ -746,6 +818,7 @@ typedef struct bam_sorted_item {
     bam1_t *b;
     uint64_t id;
     int end_pos;
+    int keep_qual;
 } bam_sorted_item;
 
 RB_HEAD(bam_sort, bam_sorted_item);
@@ -1100,6 +1173,11 @@ static int count_diff = 0;
 static int count_indel = 0;
 static int count_indel_qual = 0;
 
+static char *tid_name(bam_hdr_t *h, int tid) {
+    return h->target_name[tid];
+}
+
+// FIXME: this needs breaking down; it's become far too bloated
 int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	      bam_hdr_t *header, hts_itr_t *h_iter) {
     bam_plp_t p_iter;
@@ -1123,6 +1201,8 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
     int min_pos = INT_MAX, max_pos = 0;
     int min_pos2 = INT_MAX, max_pos2 = 0;
 
+    int64_t total_depth = 0, total_col = 0;
+
     while ((plp = bam_plp_auto(p_iter, &tid, &pos, &n_plp))) {
 	int i, preserve = 0, indel = 0;
 	unsigned char base;
@@ -1134,15 +1214,25 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	    last_tid = tid;
 	    min_pos = INT_MAX, max_pos = 0;
 	    min_pos2 = INT_MAX, max_pos2 = 0;
+	    total_depth = 0;
+	    total_col = 0;
 	}
 
-	if (n_plp > 10000) {
-	    fprintf(stderr, "Excessive depth at tid %d, pos %d, depth %d\n", tid, pos, n_plp);
+	total_depth += n_plp;
+	total_col++;
+
+	if (n_plp > MAX_DEPTH) {
+	    if (p->verbose > 1)
+		fprintf(stderr, "Excessive depth at tid %d, pos %d, depth %d\n", tid, pos, n_plp);
+	    if (p->bed_fp)
+		fprintf(p->bed_fp, "%s\t%d\t%d\tVDEEP\n",
+			tid_name(header, tid), MAX(pos-BED_DIST,0), pos+BED_DIST);
 	    goto too_deep;
 	}
 
 	if (counter++ == 100000) {
-	    fprintf(stderr, "Tid %d\tPos %d\n", tid, pos);
+	    if (p->verbose)
+		fprintf(stderr, "Processing %s:%d\n", tid_name(header,tid), pos);
 	    counter = 0;
 	}
 
@@ -1213,18 +1303,23 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	}
 #endif
 
-	int hA = cons_g5_A.scores[6] > 0
-	    ? cons_g5_A.het_call
-	    : cons_g5_A.call * 5 + cons_g5_A.call;
-	int sA = cons_g5_A.scores[6] > 0
-	    ? cons_g5_A.scores[6]
-	    : cons_g5_A.phred;
-	int hB = cons_g5_B.scores[6] > 0
-	    ? cons_g5_B.het_call
-	    : cons_g5_B.call * 5 + cons_g5_B.call;
-	int sB = cons_g5_B.scores[6] > 0
-	    ? cons_g5_B.scores[6]
-	    : cons_g5_B.phred;
+	int hA = 0, sA = 0, hB = 0, sB = 0;
+	if (p->min_qual_A) {
+	    hA = cons_g5_A.scores[6] > 0
+		? cons_g5_A.het_call
+		: cons_g5_A.call * 5 + cons_g5_A.call;
+	    sA = cons_g5_A.scores[6] > 0
+		? cons_g5_A.scores[6]
+		: cons_g5_A.phred;
+	}
+	if (p->min_qual_B) {
+	    hB = cons_g5_B.scores[6] > 0
+		? cons_g5_B.het_call
+		: cons_g5_B.call * 5 + cons_g5_B.call;
+	    sB = cons_g5_B.scores[6] > 0
+		? cons_g5_B.scores[6]
+		: cons_g5_B.phred;
+	}
 
 	if (p->min_qual_A && p->min_qual_B && hA != hB) count_diff++;
 	if (p->min_qual_A) {
@@ -1267,11 +1362,51 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	    printf("\t");
 	}
 #endif
+
+	// Check average mapping quality.
 	int had_indel = 0, had_indel_Q = 0;
+	int low_mq_count = 0, keep_qual = 0;
+	for (i = 0; i < n_plp; i++) {
+	    low_mq_count += (plp[i].b->core.qual <= p->min_mqual);
+	    if (plp[i].indel || plp[i].is_del)
+		had_indel = 1;
+	}
+
+	keep_qual = (low_mq_count / (n_plp + .01) > p->low_mqual_perc);
+
+	// Check for unexpectedly deep regions.
+	//printf("%d: %lld %lld %d\n", pos, total_depth, total_col, total_depth/total_col);
+	if (n_plp > OVER_DEPTH * (total_depth / (total_col+1)+1)) {
+	    //fprintf(stderr, "%d %d\tUnexpectedly high depth: %d vs %d\n",
+	    //	    tid, pos, n_plp, (int)(total_depth / (total_col+1)));
+	    if (p->bed_fp)
+		fprintf(p->bed_fp, "%s\t%d\t%d\tDEEP\n",
+			tid_name(header, tid), MAX(pos-BED_DIST,0), pos+BED_DIST);
+	    keep_qual = 1;
+	}
+
+
+	// Look for indel and compute STR extents.
+	int indel_sz = 0;
+	int indel_depth[101];
+	indel_depth[0] = 0;
+	int clipped = 0, n_overlap = 0;
 	for (i = 0; i < n_plp; i++) {
 	    int is_indel = (plp[i].indel || plp[i].is_del);
 
-	    if (is_indel) had_indel++;
+	    if ((plp[i].is_head && plp[i].qpos > 0) ||
+		(plp[i].is_tail && plp[i].qpos+1 < plp[i].b->core.l_qseq))
+		clipped++;
+
+	    if (!plp[i].is_tail && !plp[i].is_head)
+		n_overlap++;
+
+	    if (!plp[i].is_head && !plp[i].is_tail && (plp[i].indel > 0 || had_indel)) {
+		while (indel_sz < plp[i].indel && indel_sz < 100)
+		    indel_depth[++indel_sz] = 0;
+		if (plp[i].indel >= 0)
+		    indel_depth[MIN(plp[i].indel, 99)]++;
+	    }
 
 	    // For indels, expand to cover low-complexity regions.
 	    // (Also for SNPs if required via -i option.)
@@ -1310,6 +1445,62 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	if (had_indel) count_indel++;
 	if (had_indel_Q) count_indel_qual++;
 
+	if ((clipped - 1.0) / n_overlap >= CLIP_PERC) {
+	    if (p->verbose > 1)
+		fprintf(stderr, "%s %d\tUnexpected high clip rate, %d of %d\n",
+			tid_name(header,tid), pos, clipped, n_overlap);
+	    if (p->bed_fp)
+		fprintf(p->bed_fp, "%s\t%d\t%d\tCLIP\n",
+			tid_name(header, tid), MAX(pos-BED_DIST,0), pos+BED_DIST);
+	    keep_qual = 1;
+	}
+
+	// Over the span of an indel, the ratio of top to total should
+	// be consistently 1 or 2 things, similarly the depth.
+	if (indel_sz) {
+	    //printf("Indel at %d, max size %d\n", pos, indel_sz);
+	    //int qv1 = 0, qv2 = 0;
+	    int qd1 = 0, qd2 = 0;
+	    int indel_overlap = 0;
+	    for (i = 0; i <= indel_sz && i < 100; i++) {
+		if (!indel_depth[i])
+		    continue;
+	    	//printf("%3d\t%2d\n", i, indel_depth[i]);
+		indel_overlap += indel_depth[i];
+		if (qd1 < indel_depth[i]) {
+		    qd2 = qd1; //qv2 = qv1;
+		    qd1 = indel_depth[i];
+		    //qv1 = i;
+		} else if (qd2 < indel_depth[i]) {
+		    qd2 = indel_depth[i];
+		    //qv2 = i;
+		}
+	    }
+	    //printf("Top 2 = %d x %d,  %d x %d, out of %d, ov/n_plp=%f\n", qv1, qd1, qv2, qd2, indel_overlap, (double)indel_overlap / n_plp);
+	    
+	    if ((indel_overlap - qd1 - qd2) / (indel_overlap + .1) > INS_LEN_PERC) {
+		if (p->verbose > 1)
+		    fprintf(stderr, "%s %d\tSuspect indel, depth %d / %d, common %d+%d\n",
+			    tid_name(header,tid), pos, n_plp, indel_overlap, qd1, qd2);
+		if (p->bed_fp)
+		    fprintf(p->bed_fp, "%s\t%d\t%d\tINDEL_LEN\n",
+			    tid_name(header, tid), MAX(pos-BED_DIST,0), pos+BED_DIST);
+		keep_qual = 1;
+	    }
+
+	    if ((double)indel_overlap / n_plp < 0.5) {
+		if (p->bed_fp)
+		    fprintf(p->bed_fp, "%s\t%d\t%d\tINDEL_COVERAGE\n",
+			    tid_name(header, tid), MAX(pos-BED_DIST,0), pos+BED_DIST);
+		if (p->verbose > 1)
+		    fprintf(stderr, "%s %d\tSuspect drop in indel overlap %d vs %d\n",
+			    tid_name(header,tid), pos, indel_overlap, n_plp);
+		keep_qual = 1;
+	    }
+	}
+
+
+	// Mask individual bases
 	bam_sorted_item *bi = RB_MIN(bam_sort, bl);
 	for (i = 0; i < n_plp; i++) {
 	    // b is unedited bam in pileup.
@@ -1320,10 +1511,16 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	    assert(bi);
 
 	    b2 = bi->b;
-	    bi = RB_NEXT(bam_sort, bl, bi);
 
 	    // Assert b2 & b are same object.
 	    assert(b2 && strcmp(bam_get_qname(b), bam_get_qname(b2)) == 0);
+
+	    // Any column in this alignment has the chance to set keep_qual.
+	    // Setting it means all qualities for the overlapping sequences
+	    //are retained.
+	    if (keep_qual) bi->keep_qual = 1;
+
+	    bi = RB_NEXT(bam_sort, bl, bi);
 
 	    // First time for this seq, handle low mqual if desired.
 	    if (plp[i].is_head) {
@@ -1380,12 +1577,14 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	bi = RB_MIN(bam_sort, bl);
 	for (i = 0; i < n_plp; i++) {
 	    bam1_t *b2 = bi->b;
-	    uint8_t *qual = bam_get_qual(b2);
 
 	    if (!plp[i].is_tail) {
 		bi = RB_NEXT(bam_sort, bl, bi);
 		continue;
 	    }
+
+	    if (bi->keep_qual)
+		memcpy(bam_get_qual(bi->b), bam_get_qual(plp[i].b), plp[i].b->core.l_qseq);
 
 	    // Sliding window to not over-egg the pudding.
 	    // If a region of a read is obviously duff, then even if it
@@ -1394,6 +1593,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	    if (0) {
 		int qa = 0, x;
 		bam1_t *b = plp[i].b;
+		uint8_t *qual = bam_get_qual(b2);
 		uint8_t *qual_orig = bam_get_qual(b);
 		int WL = 10;
 		for (x = 0; x < WL && x < b->core.l_qseq; x++) {
@@ -1500,6 +1700,8 @@ void usage(FILE *fp) {
     fprintf(fp, "-r region         Limit input to region chr:pos(-pos) []\n");
     fprintf(fp, "-t tag_list       Comma separated list of aux tags to keep []\n");
     fprintf(fp, "-T tag_list       Comma separated list of aux tags to discard []\n");
+    fprintf(fp, "-b out.bed        Output suspicious regions to out.bed []\n");
+    fprintf(fp, "-v                Increase verbosity\n");
     fprintf(fp, "\n(Calling while ignoring mapping quality)\n");
     fprintf(fp, "-q int            Minimum snp call confidence [%d]\n", MIN_QUAL_A);
     fprintf(fp, "-d int            Minimum indel call confidence [%d]\n", MIN_INDEL_A);
@@ -1553,9 +1755,12 @@ int main(int argc, char **argv) {
 	.aux_whitelist = NULL,              // -t
 	.aux_blacklist = NULL,              // -T
 	.region        = NULL,              // -r
+	.low_mqual_perc= LOW_MQUAL_PERC,
+	.bed_fp        = NULL,              // -b
+	.verbose       = 0,                 // -v
     };
 
-    while ((opt = getopt(argc, argv, "I:O:q:d:x:Q:D:X:m:l:u:c:i:L:s:t:T:hr:")) != -1) {
+    while ((opt = getopt(argc, argv, "I:O:q:d:x:Q:D:X:m:l:u:c:i:L:s:t:T:hr:b:v")) != -1) {
 	switch (opt) {
 	case 'I':
 	    hts_parse_format(&in_fmt, optarg);
@@ -1633,6 +1838,17 @@ int main(int argc, char **argv) {
 	    }
             break;
 
+	case 'b':
+	    if ((params.bed_fp = fopen(optarg, "w")) == NULL) {
+		perror(optarg);
+		return 1;
+	    }
+	    break;
+
+	case 'v':
+	    params.verbose++;
+	    break;
+
 	case 'h':
 	    usage(stdout);
 	    return 1;
@@ -1643,28 +1859,30 @@ int main(int argc, char **argv) {
 	}
     }
 
-    printf("--- Crumble v%s: parameters ---\n", CRUMBLE_VERSION);
-    printf("reduce qual:   %s\n",     params.reduce_qual ? "yes" : "no");
-    printf("indel STR mul: %.2f\n",   params.iSTR_mul);
-    printf("indel STR add: %d\n",     params.iSTR_add);
-    printf("SNP   STR mul: %.2f\n",   params.sSTR_mul);
-    printf("SNP   STR add: %d\n",     params.sSTR_add);
-    printf("Qual low  1..%d -> %d\n", params.qcutoff, params.qlow);
-    printf("Qual high %d..  -> %d\n", params.qcutoff, params.qhigh);
-    printf("Keep if mqual <= %d\n",   params.min_mqual);
-    if (params.min_qual_A) {
-	printf("Calls without mqual, keep qual if:\n");
-	printf("  SNP < %d,  indel < %d,  discrep > %.2f\n",
-	       params.min_qual_A, params.min_indel_A, params.min_discrep_A);
-    } else {
-	printf("Calls without mqual: disabled.\n");
-    }
-    if (params.min_qual_B) {
-	printf("Calls with mqual, keep qual if:\n");
-	printf("  SNP < %d,  indel < %d,  discrep > %.2f\n",
-	       params.min_qual_B, params.min_indel_B, params.min_discrep_B);
-    } else {
-	printf("Calls with mqual: disabled.\n");
+    if (params.verbose) {
+	printf("--- Crumble v%s: parameters ---\n", CRUMBLE_VERSION);
+	printf("reduce qual:   %s\n",     params.reduce_qual ? "yes" : "no");
+	printf("indel STR mul: %.2f\n",   params.iSTR_mul);
+	printf("indel STR add: %d\n",     params.iSTR_add);
+	printf("SNP   STR mul: %.2f\n",   params.sSTR_mul);
+	printf("SNP   STR add: %d\n",     params.sSTR_add);
+	printf("Qual low  1..%d -> %d\n", params.qcutoff, params.qlow);
+	printf("Qual high %d..  -> %d\n", params.qcutoff, params.qhigh);
+	printf("Keep if mqual <= %d\n",   params.min_mqual);
+	if (params.min_qual_A) {
+	    printf("Calls without mqual, keep qual if:\n");
+	    printf("  SNP < %d,  indel < %d,  discrep > %.2f\n",
+		   params.min_qual_A, params.min_indel_A, params.min_discrep_A);
+	} else {
+	    printf("Calls without mqual: disabled.\n");
+	}
+	if (params.min_qual_B) {
+	    printf("Calls with mqual, keep qual if:\n");
+	    printf("  SNP < %d,  indel < %d,  discrep > %.2f\n",
+		   params.min_qual_B, params.min_indel_B, params.min_discrep_B);
+	} else {
+	    printf("Calls with mqual: disabled.\n");
+	}
     }
 
     init_bins(&params);
@@ -1727,14 +1945,19 @@ int main(int argc, char **argv) {
     if (params.aux_blacklist)
 	kh_destroy(aux_exists, params.aux_blacklist);
 
-    fprintf(stderr, "A/B Diff    = %d\n", count_diff);
-    fprintf(stderr, "A/B Indel   = %d / %d\n", count_indel_qual, count_indel); 
-    fprintf(stderr, "A:  Het     = %d / %d\n", count_het_qual_A, count_het_A);
-    fprintf(stderr, "A:  Hom     = %d / %d\n", count_hom_qual_A, count_hom_A);
-    fprintf(stderr, "A:  Discrep = %d\n", count_discrep_A);
-    fprintf(stderr, "B:  Het     = %d / %d\n", count_het_qual_B, count_het_B);
-    fprintf(stderr, "B:  Hom     = %d / %d\n", count_hom_qual_B, count_hom_B);
-    fprintf(stderr, "B:  Discrep = %d\n", count_discrep_B);
+    if (params.verbose) {
+	fprintf(stderr, "A/B Diff    = %d\n", count_diff);
+	fprintf(stderr, "A/B Indel   = %d / %d\n", count_indel_qual, count_indel); 
+	fprintf(stderr, "A:  Het     = %d / %d\n", count_het_qual_A, count_het_A);
+	fprintf(stderr, "A:  Hom     = %d / %d\n", count_hom_qual_A, count_hom_A);
+	fprintf(stderr, "A:  Discrep = %d\n", count_discrep_A);
+	fprintf(stderr, "B:  Het     = %d / %d\n", count_het_qual_B, count_het_B);
+	fprintf(stderr, "B:  Hom     = %d / %d\n", count_hom_qual_B, count_hom_B);
+	fprintf(stderr, "B:  Discrep = %d\n", count_discrep_B);
+    }
+
+    if (params.bed_fp)
+	fclose(params.bed_fp);
 
     return 0;
 }
