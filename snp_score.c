@@ -121,7 +121,7 @@
 
 // Prevalence of low mapping quality, > PERC => store all
 // Lower => larger files
-#define LOW_MQUAL_PERC 0.3
+#define LOW_MQUAL_PERC 0.5
 
 // Amount of variable sized insertion
 #define INS_LEN_PERC 0.1
@@ -145,6 +145,7 @@
 #include <math.h>
 #include <float.h>
 #include <getopt.h>
+#include <inttypes.h>
 
 #include <htslib/sam.h>
 #include <htslib/khash.h>
@@ -1171,6 +1172,13 @@ static int count_diff = 0;
 static int count_indel = 0;
 static int count_indel_qual = 0;
 
+static int64_t count_columns = 0;
+static int64_t count_low_mqual_perc = 0;
+static int64_t count_clip_perc = 0;
+static int64_t count_ins_len_perc = 0;
+static int64_t count_indel_ov_perc = 0;
+static int64_t count_over_depth = 0;
+
 static char *tid_name(bam_hdr_t *h, int tid) {
     return h->target_name[tid];
 }
@@ -1205,6 +1213,8 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	int i, preserve = 0, indel = 0;
 	unsigned char base;
 	int left_most = n_plp ? plp[0].b->core.pos : 0;
+
+	count_columns++;
 
 	if (tid != last_tid) {
 	    // Ensure b_hist is only per chromosome
@@ -1371,6 +1381,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	}
 
 	keep_qual = (low_mq_count / (n_plp + .01) > p->low_mqual_perc);
+	count_low_mqual_perc += keep_qual;
 
 	// Check for unexpectedly deep regions.
 	//printf("%d: %lld %lld %d\n", pos, total_depth, total_col, total_depth/total_col);
@@ -1381,6 +1392,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 		fprintf(p->bed_fp, "%s\t%d\t%d\tDEEP\n",
 			tid_name(header, tid), MAX(pos-BED_DIST,0), pos+BED_DIST);
 	    keep_qual = 1;
+	    count_over_depth++;
 	}
 
 
@@ -1451,6 +1463,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 		fprintf(p->bed_fp, "%s\t%d\t%d\tCLIP\n",
 			tid_name(header, tid), MAX(pos-BED_DIST,0), pos+BED_DIST);
 	    keep_qual = 1;
+	    count_clip_perc++;
 	}
 
 	// Over the span of an indel, the ratio of top to total should
@@ -1484,6 +1497,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 		    fprintf(p->bed_fp, "%s\t%d\t%d\tINDEL_LEN\n",
 			    tid_name(header, tid), MAX(pos-BED_DIST,0), pos+BED_DIST);
 		keep_qual = 1;
+		count_ins_len_perc++;
 	    }
 
 	    if ((double)indel_overlap / n_plp < p->indel_ov_perc) {
@@ -1494,6 +1508,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 		    fprintf(stderr, "%s %d\tSuspect drop in indel overlap %d vs %d\n",
 			    tid_name(header,tid), pos, indel_overlap, n_plp);
 		keep_qual = 1;
+		count_indel_ov_perc++;
 	    }
 	}
 
@@ -2020,14 +2035,20 @@ int main(int argc, char **argv) {
 	kh_destroy(aux_exists, params.aux_blacklist);
 
     if (params.verbose) {
-	fprintf(stderr, "A/B Diff    = %d\n", count_diff);
-	fprintf(stderr, "A/B Indel   = %d / %d\n", count_indel_qual, count_indel); 
-	fprintf(stderr, "A:  Het     = %d / %d\n", count_het_qual_A, count_het_A);
-	fprintf(stderr, "A:  Hom     = %d / %d\n", count_hom_qual_A, count_hom_A);
-	fprintf(stderr, "A:  Discrep = %d\n", count_discrep_A);
-	fprintf(stderr, "B:  Het     = %d / %d\n", count_het_qual_B, count_het_B);
-	fprintf(stderr, "B:  Hom     = %d / %d\n", count_hom_qual_B, count_hom_B);
-	fprintf(stderr, "B:  Discrep = %d\n", count_discrep_B);
+	fprintf(stderr, "A/B Diff         = %d\n", count_diff);
+	fprintf(stderr, "A/B Indel        = %d / %d\n", count_indel_qual, count_indel); 
+	fprintf(stderr, "A:  Het          = %d / %d\n", count_het_qual_A, count_het_A);
+	fprintf(stderr, "A:  Hom          = %d / %d\n", count_hom_qual_A, count_hom_A);
+	fprintf(stderr, "A:  Discrep      = %d\n", count_discrep_A);
+	fprintf(stderr, "B:  Het          = %d / %d\n", count_het_qual_B, count_het_B);
+	fprintf(stderr, "B:  Hom          = %d / %d\n", count_hom_qual_B, count_hom_B);
+	fprintf(stderr, "B:  Discrep      = %d\n\n", count_discrep_B);
+	fprintf(stderr, "Columns          = %"PRId64"\n", count_columns);
+	fprintf(stderr, "Low_mqual_perc   = %"PRId64"\n", count_low_mqual_perc);
+	fprintf(stderr, "Clip_perc        = %"PRId64"\n", count_clip_perc);
+	fprintf(stderr, "Ins_len_perc     = %"PRId64"\n", count_ins_len_perc);
+	fprintf(stderr, "indel_ov_perc    = %"PRId64"\n", count_indel_ov_perc);
+	fprintf(stderr, "count_over_depth = %"PRId64"\n", count_over_depth);
     }
 
     if (params.bed_fp)
