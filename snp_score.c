@@ -49,7 +49,7 @@
 
 //#define DEBUG
 
-#define CRUMBLE_VERSION "0.4"
+#define CRUMBLE_VERSION "0.5"
 
 /*
  * Prunes quality based on snp calling score.
@@ -98,7 +98,7 @@
 #define REDUCE_QUAL 1
 
 // Standard gap5 algorithm; set MIN_QUAL_A to 0 to disable
-#define MIN_QUAL_A 30
+#define MIN_QUAL_A 0
 #define MIN_INDEL_A 50
 #define MIN_DISCREP_A 2.0
 
@@ -119,7 +119,6 @@
 #define I_STR_ADD 2
 #define S_STR_ADD 0
 
-#if 1
 // Prevalence of low mapping quality, > PERC => store all
 // Lower => larger files
 #define LOW_MQUAL_PERC 0.3
@@ -131,15 +130,10 @@
 #define CLIP_PERC 0.2
 
 // Amount of over-depth to consider this as as suspect region
-#define OVER_DEPTH 3
+#define OVER_DEPTH 3.0
 
-#else
-// Essentially disables these features
-#define LOW_MQUAL_PERC 99.0
-#define INS_LEN_PERC 99.0
-#define CLIP_PERC 99.0
-#define OVER_DEPTH 9999
-#endif
+// Percentage of reads spanning indel.
+#define INDEL_OVERLAP_PERC 0.5
 
 #define BED_DIST 50
 
@@ -196,6 +190,10 @@ typedef struct {
     auxhash_t aux_blacklist;
 
     double low_mqual_perc;
+    double clip_perc;
+    double ins_len_perc;
+    double over_depth;
+    double indel_ov_perc;
     FILE *bed_fp;
     int verbose;
 } cram_lossy_params;
@@ -1376,7 +1374,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 
 	// Check for unexpectedly deep regions.
 	//printf("%d: %lld %lld %d\n", pos, total_depth, total_col, total_depth/total_col);
-	if (n_plp > OVER_DEPTH * (total_depth / (total_col+1)+1)) {
+	if (n_plp > p->over_depth * (total_depth / (total_col+1)+1)) {
 	    //fprintf(stderr, "%d %d\tUnexpectedly high depth: %d vs %d\n",
 	    //	    tid, pos, n_plp, (int)(total_depth / (total_col+1)));
 	    if (p->bed_fp)
@@ -1445,7 +1443,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	if (had_indel) count_indel++;
 	if (had_indel_Q) count_indel_qual++;
 
-	if ((clipped - 1.0) / n_overlap >= CLIP_PERC) {
+	if ((clipped - 1.0) / n_overlap >= p->clip_perc) {
 	    if (p->verbose > 1)
 		fprintf(stderr, "%s %d\tUnexpected high clip rate, %d of %d\n",
 			tid_name(header,tid), pos, clipped, n_overlap);
@@ -1478,7 +1476,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	    }
 	    //printf("Top 2 = %d x %d,  %d x %d, out of %d, ov/n_plp=%f\n", qv1, qd1, qv2, qd2, indel_overlap, (double)indel_overlap / n_plp);
 	    
-	    if ((indel_overlap - qd1 - qd2) / (indel_overlap + .1) > INS_LEN_PERC) {
+	    if ((indel_overlap - qd1 - qd2) / (indel_overlap + .1) > p->ins_len_perc) {
 		if (p->verbose > 1)
 		    fprintf(stderr, "%s %d\tSuspect indel, depth %d / %d, common %d+%d\n",
 			    tid_name(header,tid), pos, n_plp, indel_overlap, qd1, qd2);
@@ -1488,7 +1486,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 		keep_qual = 1;
 	    }
 
-	    if ((double)indel_overlap / n_plp < 0.5) {
+	    if ((double)indel_overlap / n_plp < p->indel_ov_perc) {
 		if (p->bed_fp)
 		    fprintf(p->bed_fp, "%s\t%d\t%d\tINDEL_COVERAGE\n",
 			    tid_name(header, tid), MAX(pos-BED_DIST,0), pos+BED_DIST);
@@ -1688,6 +1686,7 @@ void usage(FILE *fp) {
     fprintf(fp, "\nOptions:\n"
 	    "-I fmt(,opt...)   Input format and format-options [auto].\n"
 	    "-O fmt(,opt...)   Output format and format-options [SAM].\n");
+    fprintf(fp, "-v                Increase verbosity\n");
     fprintf(fp,
 "-c qual_cutoff    In highly confident regions, quality values above/below\n"
 "-l qual_lower         'qual_cutoff' [%d] are quantised to 'qual_lower' [%d]\n"
@@ -1701,7 +1700,12 @@ void usage(FILE *fp) {
     fprintf(fp, "-t tag_list       Comma separated list of aux tags to keep []\n");
     fprintf(fp, "-T tag_list       Comma separated list of aux tags to discard []\n");
     fprintf(fp, "-b out.bed        Output suspicious regions to out.bed []\n");
-    fprintf(fp, "-v                Increase verbosity\n");
+    fprintf(fp, "-P float          Keep qual if depth locally >= [%.1f] times deeper than expected\n", OVER_DEPTH);
+    fprintf(fp, "\n(Preserving whole read qualities; values are fractions of read coverage)\n");
+    fprintf(fp, "-C float          Keep if >= [%.2f] reads have soft-clipping\n", CLIP_PERC);
+    fprintf(fp, "-M float          Keep if >= [%.2f] reads have low mapping quality\n", LOW_MQUAL_PERC);
+    fprintf(fp, "-Z float          Keep if >= [%.2f] indel sizes do not fit bi-modal dist.\n", INS_LEN_PERC);
+    fprintf(fp, "-V float          Keep if <  [%.2f] reads span indel\n", INDEL_OVERLAP_PERC);
     fprintf(fp, "\n(Calling while ignoring mapping quality)\n");
     fprintf(fp, "-q int            Minimum snp call confidence [%d]\n", MIN_QUAL_A);
     fprintf(fp, "-d int            Minimum indel call confidence [%d]\n", MIN_INDEL_A);
@@ -1710,6 +1714,12 @@ void usage(FILE *fp) {
     fprintf(fp, "-Q int            Minimum snp call confidence [%d]\n", MIN_QUAL_B);
     fprintf(fp, "-D int            Minimum indel call confidence [%d]\n", MIN_INDEL_B);
     fprintf(fp, "-X float          Minimum discrepancy score [%.1f]\n", MIN_DISCREP_B);
+    fprintf(fp, "\n(Standard compression levels combining the above.)\n");
+    fprintf(fp, "-1                Synonym for -s1.0,5 -i2.0,1 -m5\n");
+    fprintf(fp, "-3                Synonym for -s1.0,0\n");
+    fprintf(fp, "-5                Synonym for (defaults)\n");
+    fprintf(fp, "-7                Synonym for -P 999 -C 1 -M 1 -Z 1 -V 0\n");
+    fprintf(fp, "-9                Synonym for -Q70 -D125 -X1.5 -P 999 -C 1 -M 1 -Z 1 -V 0\n");
     fprintf(fp, "\n");
     fprintf(fp,
 "Standard htslib format options apply.  So to create a CRAM file with lossy\n\
@@ -1737,7 +1747,7 @@ int main(int argc, char **argv) {
     int opt;
 
     cram_lossy_params params = {
-	.reduce_qual   = REDUCE_QUAL,       // -r
+	.reduce_qual   = REDUCE_QUAL,       // -L
 	.iSTR_mul      = I_STR_MUL,         // -i
 	.iSTR_add      = I_STR_ADD,         // -i
 	.sSTR_mul      = S_STR_MUL,         // -s
@@ -1755,12 +1765,21 @@ int main(int argc, char **argv) {
 	.aux_whitelist = NULL,              // -t
 	.aux_blacklist = NULL,              // -T
 	.region        = NULL,              // -r
-	.low_mqual_perc= LOW_MQUAL_PERC,
 	.bed_fp        = NULL,              // -b
+	.clip_perc     = CLIP_PERC,         // -C
+	.low_mqual_perc= LOW_MQUAL_PERC,    // -M
+	.ins_len_perc  = INS_LEN_PERC,      // -Z
+	.over_depth    = OVER_DEPTH,        // -P
+	.indel_ov_perc = INDEL_OVERLAP_PERC,// -V
 	.verbose       = 0,                 // -v
     };
 
-    while ((opt = getopt(argc, argv, "I:O:q:d:x:Q:D:X:m:l:u:c:i:L:s:t:T:hr:b:v")) != -1) {
+    //  ...   ..  ..    ..... .
+    // abcdefghijklmnopqrstuvwxyz
+    //   ..    .  .. ...  . . . .
+    // ABCDEFGHIJKLMNOPQRSTUVWXYZ
+
+    while ((opt = getopt(argc, argv, "I:O:q:d:x:Q:D:X:m:l:u:c:i:L:s:t:T:hr:b:vC:M:Z:P:V:13579")) != -1) {
 	switch (opt) {
 	case 'I':
 	    hts_parse_format(&in_fmt, optarg);
@@ -1843,6 +1862,61 @@ int main(int argc, char **argv) {
 		perror(optarg);
 		return 1;
 	    }
+	    break;
+
+	case 'C':
+	    params.clip_perc = atof(optarg);
+	    break;
+
+	case 'M':
+	    params.low_mqual_perc = atof(optarg);
+	    break;
+
+	case 'Z':
+	    params.ins_len_perc = atof(optarg);
+	    break;
+
+	case 'P':
+	    params.over_depth = atof(optarg);
+	    break;
+
+	case 'V':
+	    params.indel_ov_perc = atof(optarg);
+	    break;
+
+	case '9':
+	    // Most aggressive compression
+	    params.min_qual_B = 70;
+	    params.min_indel_B = 125;
+	    params.min_discrep_B = 1.5;
+	    params.low_mqual_perc = 1.0;
+	    params.ins_len_perc = 1.0;
+	    params.indel_ov_perc = 0;
+	    params.over_depth = 999;
+	    break;
+
+	case '7':
+	    params.low_mqual_perc = 1.0;
+	    params.ins_len_perc = 1.0;
+	    params.indel_ov_perc = 0;
+	    params.over_depth = 999;
+	    break;
+
+	case '5':
+	    break;
+
+	case '3':
+	    params.sSTR_mul = 1.0;
+	    params.sSTR_add = 0;
+	    break;
+
+	case '1':
+	    // Most conservative compression
+	    params.sSTR_mul = 1.0;
+	    params.sSTR_add = 5;
+	    params.iSTR_mul = 2.0;
+	    params.iSTR_add = 1;
+	    params.min_mqual = 5;
 	    break;
 
 	case 'v':
