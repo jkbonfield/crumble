@@ -215,10 +215,7 @@ void init_bins(cram_lossy_params *p) {
 //-----------------------------------------------------------------------------
 // Bits ripped out of gap5's consensus algorithm; an interim solution
 
-#define CONS_NO_END_N   1
-#define CONS_SCORES     2
 #define CONS_DISCREP    4
-#define CONS_COUNTS     8
 #define CONS_ALL        15
 
 #define CONS_MQUAL      16
@@ -232,18 +229,14 @@ typedef struct {
     /* Use "ACGT*"[het / 5] vs "ACGT*"[het % 5] for the combination */
     int het_call;
 
-    /* Log-odds values for A, C, G and T and gap. 5th is N, with 0 prob */
-    /* scores[6] is score for het_call above */
-    float scores[7];
+    /* Log-odds for het_call */
+    int het_phred;
 
     /* Single phred style call */
     unsigned char phred;
 
     /* Sequence depth */
     int depth;
-
-    /* Individual base type counts */
-    int counts[6];
 
     /* Discrepancy search score */
     float discrep;
@@ -549,18 +542,8 @@ int calculate_consensus_pileup(int flags,
 	mqual_pow[255] = mqual_pow[10];
     }
 
-    /* Currently always needed for the N vs non-N evaluation */
-    flags |= CONS_COUNTS;
-
     /* Initialise */
-    if (flags & CONS_COUNTS) {
-	cons->counts[0] = 0;
-	cons->counts[1] = 0;
-	cons->counts[2] = 0;
-	cons->counts[3] = 0;
-	cons->counts[4] = 0;
-	cons->counts[5] = 0;
-    }
+    int counts[6] = {0};
 
     /* Accumulate */
     int n;
@@ -604,8 +587,8 @@ int calculate_consensus_pileup(int flags,
 	    qual = 1;
 
 	__ = p__[stech][qual];
-	MM = pMM[stech][qual];
-	_M = p_M[stech][qual];
+	MM = pMM[stech][qual] - __;
+	_M = p_M[stech][qual] - __;
 
 	if (flags & CONS_DISCREP) {
 	    qe = q2p[qual];
@@ -613,48 +596,27 @@ int calculate_consensus_pileup(int flags,
 	    sumsC[base] += 1 - qe;
 	}
 
-	if (flags & CONS_COUNTS)
-	    cons->counts[base]++;
+	counts[base]++;
 
 	switch (base) {
 	case 0:
 	    S[0] += MM; S[1 ]+= _M; S[2 ]+= _M; S[3 ]+= _M; S[4 ]+= _M;
-	                S[5 ]+= __; S[6 ]+= __; S[7 ]+= __; S[8 ]+= __;
-			            S[9 ]+= __; S[10]+= __; S[11]+= __; 
-				                S[12]+= __; S[13]+= __; 
-						            S[14]+= __;
 	    break;
 
 	case 1:
-	    S[0] += __; S[1 ]+= _M; S[2 ]+= __; S[3 ]+= __; S[4 ]+= __;
-	                S[5 ]+= MM; S[6 ]+= _M; S[7 ]+= _M; S[8 ]+= _M;
-			            S[9 ]+= __; S[10]+= __; S[11]+= __; 
-				                S[12]+= __; S[13]+= __; 
-						            S[14]+= __;
+	    S[1 ]+= _M; S[5 ]+= MM; S[6 ]+= _M; S[7 ]+= _M; S[8 ]+= _M;
 	    break;
 
 	case 2:
-	    S[0] += __; S[1 ]+= __; S[2 ]+= _M; S[3 ]+= __; S[4 ]+= __;
-	                S[5 ]+= __; S[6 ]+= _M; S[7 ]+= __; S[8 ]+= __;
-			            S[9 ]+= MM; S[10]+= _M; S[11]+= _M; 
-				                S[12]+= __; S[13]+= __; 
-						            S[14]+= __;
+	    S[2 ]+= _M; S[6 ]+= _M; S[9 ]+= MM; S[10]+= _M; S[11]+= _M; 
 	    break;
 
 	case 3:
-	    S[0] += __; S[1 ]+= __; S[2 ]+= __; S[3 ]+= _M; S[4 ]+= __;
-	                S[5 ]+= __; S[6 ]+= __; S[7 ]+= _M; S[8 ]+= __;
-			            S[9 ]+= __; S[10]+= _M; S[11]+= __; 
-				                S[12]+= MM; S[13]+= _M; 
-						            S[14]+= __;
+	    S[3 ]+= _M; S[7 ]+= _M; S[10]+= _M; S[12]+= MM; S[13]+= _M; 
 	    break;
 
 	case 4:
-	    S[0] += __; S[1 ]+= __; S[2 ]+= __; S[3 ]+= __; S[4 ]+= _M;
-	                S[5 ]+= __; S[6 ]+= __; S[7 ]+= __; S[8 ]+= _M;
-			            S[9 ]+= __; S[10]+= __; S[11]+= _M; 
-				                S[12]+= __; S[13]+= _M; 
-						            S[14]+= MM;
+	    S[4 ]+= _M; S[8 ]+= _M; S[11]+= _M; S[13]+= _M; S[14]+= MM;
 	    break;
 
 	case 5: /* N => equal weight to all A,C,G,T but not a pad */
@@ -662,7 +624,6 @@ int calculate_consensus_pileup(int flags,
 	                S[5 ]+= MM; S[6 ]+= MM; S[7 ]+= MM; S[8 ]+= _M;
 			            S[9 ]+= MM; S[10]+= MM; S[11]+= _M; 
 				                S[12]+= MM; S[13]+= _M; 
-						            S[14]+= __;
 	    break;
 	}
 
@@ -738,7 +699,7 @@ int calculate_consensus_pileup(int flags,
 	}
 
 	/* And store result */
-	if (depth && depth != cons->counts[5] /* all N */) {
+	if (depth && depth != counts[5] /* all N */) {
 	    double m;
 
 	    cons->depth = depth;
@@ -747,47 +708,20 @@ int calculate_consensus_pileup(int flags,
 	    if (norm[call] == 0) norm[call] = DBL_MIN;
 	    ph = -TENOVERLOG10 * fast_log(norm[call]) + .5;
 	    cons->phred = ph > 255 ? 255 : (ph < 0 ? 0 : ph);
+	    //cons->call_prob1 = norm[call]; // p = 1 - call_prob1
 
 	    cons->het_call = map_het[het_call];
 	    if (norm[het_call] == 0) norm[het_call] = DBL_MIN;
 	    ph = TENOVERLOG10 * (fast_log(S[het_call]) - fast_log(norm[het_call])) + .5;
-	    cons->scores[6] = ph;
-
-	    if (flags & CONS_SCORES) {
-		/* AA */
-		if (norm[0] == 0) norm[0] = DBL_MIN;
-		ph = TENOVERLOG10 * (fast_log(S[0]) - fast_log(norm[0])) + .5;
-		cons->scores[0] = ph;
-
-		/* CC */
-		if (norm[5] == 0) norm[5] = DBL_MIN;
-		ph = TENOVERLOG10 * (fast_log(S[5]) - fast_log(norm[5])) + .5;
-		cons->scores[1] = ph;
-
-		/* GG */
-		if (norm[9] == 0) norm[9] = DBL_MIN;
-		ph = TENOVERLOG10 * (fast_log(S[9]) - fast_log(norm[9])) + .5;
-		cons->scores[2] = ph;
-
-		/* TT */
-		if (norm[12] == 0) norm[12] = DBL_MIN;
-		ph = TENOVERLOG10 * (fast_log(S[12]) - fast_log(norm[12])) + .5;
-		cons->scores[3] = ph;
-
-		/* ** */
-		if (norm[14] == 0) norm[14] = DBL_MIN;
-		ph = TENOVERLOG10 * (fast_log(S[14]) - fast_log(norm[14])) + .5;
-		cons->scores[4] = ph;
-
-		/* N */
-		cons->scores[5] = 0; /* N */
-	    }
+	    cons->het_phred = ph;
+	    //cons->het_prob_n = S[het_call]; // p = prob_n / prob_d
+	    //cons->het_prob_d = norm[het_call];
 
 	    /* Compute discrepancy score */
 	    if (flags & CONS_DISCREP) {
 		m = sumsC[0]+sumsC[1]+sumsC[2]+sumsC[3]+sumsC[4];
 		double c;
-		if (cons->scores[6] > 0)
+		if (cons->het_phred > 0)
 		    c = sumsC[cons->het_call%5] + sumsC[cons->het_call/5];
 		else
 		    c = sumsC[cons->call];;
@@ -800,13 +734,7 @@ int calculate_consensus_pileup(int flags,
 	} else {
 	    cons->call = 5; /* N */
 	    cons->het_call = 0;
-	    cons->scores[0] = 0;
-	    cons->scores[1] = 0;
-	    cons->scores[2] = 0;
-	    cons->scores[3] = 0;
-	    cons->scores[4] = 0;
-	    cons->scores[5] = 0;
-	    cons->scores[6] = 0;
+	    cons->het_phred = 0;
 	    cons->phred = 0;
 	    cons->depth = 0;
 	    cons->discrep = 0;
@@ -1297,9 +1225,9 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	int call1 = 0, call2 = 0; // samtools numerical =ACMGRSVTWYHKDBN
 
 	if (p->min_qual_A != 0) {
-	    calculate_consensus_pileup(CONS_ALL,
+	    calculate_consensus_pileup(CONS_DISCREP,
 				       plp, n_plp, &cons_g5_A);
-	    if (cons_g5_A.scores[6] > 0) {
+	    if (cons_g5_A.het_phred > 0) {
 		call1 = 1<<(cons_g5_A.het_call / 5);
 		call2 = 1<<(cons_g5_A.het_call % 5);
 	    } else {
@@ -1308,9 +1236,9 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	}
 
 	if (p->min_qual_B != 0) {
-	    calculate_consensus_pileup(CONS_ALL | CONS_MQUAL,
+	    calculate_consensus_pileup(CONS_DISCREP | CONS_MQUAL,
 				       plp, n_plp, &cons_g5_B);
-	    if (cons_g5_B.scores[6] > 0) {
+	    if (cons_g5_B.het_phred > 0) {
 		call1 = 1<<(cons_g5_B.het_call / 5);
 		call2 = 1<<(cons_g5_B.het_call % 5);
 	    } else {
@@ -1324,10 +1252,10 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 
 #ifdef DEBUG
 	if (p->min_qual_A != 0) {
-	    if (cons_g5_A.scores[6] > 0) {
+	    if (cons_g5_A.het_phred > 0) {
 		printf("%c/%c %4d\t",
 		       "ACGT*"[cons_g5_A.het_call / 5], "ACGT*"[cons_g5_A.het_call % 5],
-		       (int)cons_g5_A.scores[6]);
+		       (int)cons_g5_A.het_phred);
 	    } else {
 		printf("%c   %4d\t",
 		       "ACGT*N"[cons_g5_A.call],
@@ -1336,10 +1264,10 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	}
 
 	if (p->min_qual_B != 0) {
-	    if (cons_g5_B.scores[6] > 0) {
+	    if (cons_g5_B.het_phred > 0) {
 		printf("%c/%c %4d\t",
 		       "ACGT*"[cons_g5_B.het_call / 5], "ACGT*"[cons_g5_B.het_call % 5],
-		       (int)cons_g5_B.scores[6]);
+		       (int)cons_g5_B.het_phred);
 	    } else {
 		printf("%c   %4d\t",
 		       "ACGT*N"[cons_g5_B.call],
@@ -1350,25 +1278,25 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 
 	int hA = 0, sA = 0, hB = 0, sB = 0;
 	if (p->min_qual_A) {
-	    hA = cons_g5_A.scores[6] > 0
+	    hA = cons_g5_A.het_phred > 0
 		? cons_g5_A.het_call
 		: cons_g5_A.call * 5 + cons_g5_A.call;
-	    sA = cons_g5_A.scores[6] > 0
-		? cons_g5_A.scores[6]
+	    sA = cons_g5_A.het_phred > 0
+		? cons_g5_A.het_phred
 		: cons_g5_A.phred;
 	}
 	if (p->min_qual_B) {
-	    hB = cons_g5_B.scores[6] > 0
+	    hB = cons_g5_B.het_phred > 0
 		? cons_g5_B.het_call
 		: cons_g5_B.call * 5 + cons_g5_B.call;
-	    sB = cons_g5_B.scores[6] > 0
-		? cons_g5_B.scores[6]
+	    sB = cons_g5_B.het_phred > 0
+		? cons_g5_B.het_phred
 		: cons_g5_B.phred;
 	}
 
 	if (p->min_qual_A && p->min_qual_B && hA != hB) count_diff++;
 	if (p->min_qual_A) {
-	    if (cons_g5_A.scores[6] > 0) {
+	    if (cons_g5_A.het_phred > 0) {
 		count_het_A++;
 		if (sA < p->min_qual_A)
 		    count_het_qual_A++;
@@ -1381,7 +1309,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 		count_discrep_A++;
 	}
 	if (p->min_qual_B) {
-	    if (cons_g5_B.scores[6] > 0) {
+	    if (cons_g5_B.het_phred > 0) {
 		count_het_B++;
 		if (sB < p->min_qual_B)
 		    count_het_qual_B++;
