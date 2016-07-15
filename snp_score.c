@@ -1345,12 +1345,12 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 		had_indel = 1;
 	}
 
-	keep_qual = (low_mq_count / (n_plp + .01) > p->low_mqual_perc);
+	keep_qual = low_mq_count > p->low_mqual_perc * (n_plp + .01);
 	count_low_mqual_perc += keep_qual;
 
 	// Check for unexpectedly deep regions.
 	//printf("%d: %lld %lld %d\n", pos, total_depth, total_col, total_depth/total_col);
-	if (n_plp > p->over_depth * (total_depth / (total_col+1)+1)) {
+	if (n_plp*(total_col+1) > p->over_depth * (total_depth+1)) {
 	    //fprintf(stderr, "%d %d\tUnexpectedly high depth: %d vs %d\n",
 	    //	    tid, pos, n_plp, (int)(total_depth / (total_col+1)));
 	    if (p->bed_fp)
@@ -1358,6 +1358,12 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 			tid_name(header, tid), MAX(pos-BED_DIST,0), pos+BED_DIST);
 	    keep_qual = 1;
 	    count_over_depth++;
+	}
+
+	// Keep average depth to within the last few Mb only.
+	if (total_col > 1024*1024) {
+	    total_col   >>= 1;
+	    total_depth >>= 1;
 	}
 
 
@@ -1425,7 +1431,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	if (had_indel) count_indel++;
 	if (had_indel_Q) count_indel_qual++;
 
-	if ((clipped - 1.0) / n_overlap >= p->clip_perc) {
+	if ((clipped - 1.0) >= p->clip_perc * n_overlap) {
 	    if (p->verbose > 1)
 		fprintf(stderr, "%s %d\tUnexpected high clip rate, %d of %d\n",
 			tid_name(header,tid), pos, clipped, n_overlap);
@@ -1459,7 +1465,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	    }
 	    //printf("Top 2 = %d x %d,  %d x %d, out of %d, ov/n_plp=%f\n", qv1, qd1, qv2, qd2, indel_overlap, (double)indel_overlap / n_plp);
 	    
-	    if ((indel_overlap - qd1 - qd2) / (indel_overlap + .1) > p->ins_len_perc) {
+	    if ((indel_overlap - qd1 - qd2) > p->ins_len_perc * (indel_overlap + .1)) {
 		if (p->verbose > 1)
 		    fprintf(stderr, "%s %d\tSuspect indel, depth %d / %d, common %d+%d\n",
 			    tid_name(header,tid), pos, n_plp, indel_overlap, qd1, qd2);
@@ -1470,7 +1476,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 		count_ins_len_perc++;
 	    }
 
-	    if ((double)indel_overlap / n_plp < p->indel_ov_perc) {
+	    if ((double)indel_overlap < p->indel_ov_perc * n_plp) {
 		if (p->bed_fp)
 		    fprintf(p->bed_fp, "%s\t%d\t%d\tINDEL_COVERAGE\n",
 			    tid_name(header, tid), MAX(pos-BED_DIST,0), pos+BED_DIST);
