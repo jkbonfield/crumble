@@ -287,6 +287,8 @@ static double poo[9][101], puu[9][101], pum[9][101], pmm[9][101];
 
 static double e_tab_a[1002];
 static double *e_tab = &e_tab_a[500];
+static double e_tab2_a[1002];
+static double *e_tab2 = &e_tab2_a[500];
 static double e_log[501];
 
 /*
@@ -332,6 +334,8 @@ static void consensus_init(double p_het) {
 
     for (i = -500; i <= 500; i++)
     	e_tab[i] = exp(i);
+    for (i = -500; i <= 500; i++)
+    	e_tab2[i] = exp(i/10.);
     for (i = 0; i <= 500; i++)
 	e_log[i] = log(i);
 
@@ -468,6 +472,9 @@ static inline double fast_log(double y) {
 
 #if 1
 static inline double fast_exp(double y) {
+    if (y >= -50 && y <= 50)
+	return e_tab2[(int)(y*10)];
+
     if (y < -500)
 	y = -500;
     if (y > 500)
