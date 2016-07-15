@@ -988,8 +988,18 @@ void purge_tags(cram_lossy_params *settings, bam1_t *b) {
 }
 
 //-----------------------------------------------------------------------------
-void flush_bam_list(cram_lossy_params *p, bam_sorted_list *bl,
-		    int before, samFile *out, bam_hdr_t *header) {
+typedef struct {
+    // sam, bam AND hts! All the weasles in a single bag :)
+    samFile *fp;
+    bam_hdr_t *header;
+    hts_itr_t *iter;
+    bam_sorted_list *bl, *b_hist;
+    bam1_t *b_unmap;
+    int64_t count_in, count_out;
+} pileup_cd;
+
+int flush_bam_list(pileup_cd *cd, cram_lossy_params *p, bam_sorted_list *bl,
+		   int before, samFile *out, bam_hdr_t *header) {
     bam_sorted_item *bi, *next;
 
     // Sanity check
@@ -1013,23 +1023,18 @@ void flush_bam_list(cram_lossy_params *p, bam_sorted_list *bl,
 	    if (qual[x] & 0x80)
 		qual[x] &= ~0x80;
 	}
-	sam_write1(out, header, bi->b);
+	cd->count_out++;
+	if (sam_write1(out, header, bi->b) < 0)
+	    return -1;
 	bam_destroy1(bi->b);
 	remove_bam_list(bl, bi);
     }
+
+    return 0;
 }
 
 //-----------------------------------------------------------------------------
 // Main pileup iterator
-
-typedef struct {
-    // sam, bam AND hts! All the weasles in a single bag :)
-    samFile *fp;
-    bam_hdr_t *header;
-    hts_itr_t *iter;
-    bam_sorted_list *bl, *b_hist;
-    bam1_t *b_unmap;
-} pileup_cd;
 
 int pileup_callback(void *vp, bam1_t *b) {
     pileup_cd *cd = (pileup_cd *)vp;
@@ -1038,6 +1043,8 @@ int pileup_callback(void *vp, bam1_t *b) {
 	: sam_read1(cd->fp, cd->header, b);
 
     if (ret >= 0) {
+	cd->count_in++;
+
 	// Unmapped chromosome => end of pileup.  Record the read we've
 	// already read and then feign EOF so we can handle these outside
 	// of the pileup interface.
@@ -1122,11 +1129,14 @@ int ref2query_pos(bam1_t *b, int pos) {
 // into seq b.  This is used to find the extents over which we may wish to
 // preserve scores given something important is going on at apos (typically
 // indel).
-void mask_LC_regions(cram_lossy_params *p, int is_indel, bam1_t *b,
-		     int apos, int rpos, int *min_pos, int *max_pos) {
+int mask_LC_regions(cram_lossy_params *p, int is_indel, bam1_t *b,
+		    int apos, int rpos, int *min_pos, int *max_pos) {
     int len = b->core.l_qseq;
     char *seq = malloc(len);
     int i;
+
+    if (!seq)
+	return -1;
 
     for (i = 0; i < len; i++)
 	seq[i] = seq_nt16_str[bam_seqi(bam_get_seq(b), i)];
@@ -1172,6 +1182,7 @@ void mask_LC_regions(cram_lossy_params *p, int is_indel, bam1_t *b,
     }    
 
     free(seq);
+    return 0;
 }
 
 static int count_het_qual_A = 0;
@@ -1217,6 +1228,8 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
     cd.iter = h_iter;
     cd.bl = bl;
     cd.b_hist = b_hist;
+    cd.count_in = 0;
+    cd.count_out = 0;
 
     p_iter = bam_plp_init(pileup_callback, &cd);
     bam_plp_set_maxcnt(p_iter, INT_MAX);
@@ -1234,7 +1247,8 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 
 	if (tid != last_tid) {
 	    // Ensure b_hist is only per chromosome
-	    flush_bam_list(p, b_hist, INT_MAX, out, header);
+	    if (flush_bam_list(&cd, p, b_hist, INT_MAX, out, header) < 0)
+		return -1;
 	    last_tid = tid;
 	    min_pos = INT_MAX, max_pos = 0;
 	    min_pos2 = INT_MAX, max_pos2 = 0;
@@ -1450,8 +1464,13 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 		    indel = 1;
 		}
 
-		mask_LC_regions(p, is_indel, plp[i].b, pos, plp[i].qpos+1, &min_pos, &max_pos);
-		mask_LC_regions(p, is_indel, plp[i].b, pos+indel, plp[i].qpos+1, &min_pos, &max_pos);
+		if (mask_LC_regions(p, is_indel, plp[i].b, pos,
+				    plp[i].qpos+1, &min_pos, &max_pos) < 0)
+		    return -1;
+		if (mask_LC_regions(p, is_indel, plp[i].b, pos+indel,
+				    plp[i].qpos+1, &min_pos, &max_pos) < 0)
+		    return -1;
+
 		if (min_pos > pos) min_pos = pos;
 		if (max_pos < pos) max_pos = pos;
 
@@ -1658,7 +1677,8 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	}
 
 	// Flush history (preserving sort order).
-	flush_bam_list(p, b_hist, left_most, out, header);
+	if (flush_bam_list(&cd, p, b_hist, left_most, out, header) < 0)
+	    return -1;
     }
 
     // Handle any in-flight reads that haven't yet finished as pileup
@@ -1671,17 +1691,22 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	bi = next;
     }
 
-    flush_bam_list(p, b_hist, INT_MAX, out, header);
+    if (flush_bam_list(&cd, p, b_hist, INT_MAX, out, header) < 0)
+	return -1;
 
     // Handle trailing unmapped reads
     if (cd.b_unmap) {
+	int next = 0;
 	do {
 	    purge_tags(p, cd.b_unmap);
-	    sam_write1(out, header, cd.b_unmap);
-
-	} while ((cd.iter
-		  ? sam_itr_next(cd.fp, cd.iter, cd.b_unmap)
-		  : sam_read1(cd.fp, cd.header, cd.b_unmap)) >= 0);
+	    cd.count_out++;
+	    if (sam_write1(out, header, cd.b_unmap) < 0)
+		return -1;
+	    next = (cd.iter
+		    ? sam_itr_next(cd.fp, cd.iter, cd.b_unmap)
+		    : sam_read1(cd.fp, cd.header, cd.b_unmap)) >= 0;
+	    if (next) cd.count_in++;
+	} while (next);
 
 	bam_destroy1(cd.b_unmap);
     }
@@ -1689,6 +1714,13 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
     bam_plp_destroy(p_iter);
     bam_sorted_list_destroy(bl);
     bam_sorted_list_destroy(b_hist);
+
+    if (cd.count_in != cd.count_out) {
+	fprintf(stderr, "ERROR: lost a read?\n");
+	fprintf(stderr, "Read  %"PRId64" reads\n",   cd.count_in);
+	fprintf(stderr, "Wrote %"PRId64" reads\n\n", cd.count_out);
+	return 1;
+    }
 
     return 0;
 }
