@@ -1046,8 +1046,24 @@ int pileup_callback(void *vp, bam1_t *b) {
 	    return -1;
 	}
 
-	insert_bam_list(b->core.flag & BAM_FUNMAP ? cd->b_hist : cd->bl,
-			bam_dup1(b));
+	int unmap = b->core.flag & BAM_FUNMAP;
+	if (!unmap) {
+	    // Mapped reads that have no matching ref location, eg
+	    // they are entirely insertion, will not appear in any pileup
+	    // column.  Therefore treat them as unmapped to avoid errors.
+	    uint32_t *cig = bam_get_cigar(b);
+	    int i, n = b->core.n_cigar;
+	    for (i = 0; i < n; i++)
+		if (bam_cigar_type(bam_cigar_op(cig[i])) & 2)
+		    break;
+	    if (i == n) {
+		printf("Note: %s mapped at #%d,%d but has no cigar ref op!\n",
+		       bam_get_qname(b), b->core.tid, b->core.pos);
+		unmap = 1;
+	    }
+	}
+
+	insert_bam_list(unmap ? cd->b_hist : cd->bl, bam_dup1(b));
     }
 
     return ret;
@@ -1524,6 +1540,13 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	    assert(bi);
 
 	    b2 = bi->b;
+
+	    // We have an assumption that all mapped reads appear in the pileup
+	    // somewhere.
+	    //
+	    // The caveat is any read that doesn't have a M, =, X or D cigar
+	    // op (eg "5S20I").  We treat these as unmapped in pileup_callback
+	    // to avoid this assertion failing.
 
 	    // Assert b2 & b are same object.
 	    assert(b2 && strcmp(bam_get_qname(b), bam_get_qname(b2)) == 0);
