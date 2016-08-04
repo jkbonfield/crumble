@@ -244,8 +244,10 @@ typedef struct {
 
 #define P_HET 1e-6
 
-#define LOG10        2.30258509299404568401
-#define TENOVERLOG10 4.34294481903251827652
+#define LOG10            2.30258509299404568401
+#define TENOVERLOG10     4.34294481903251827652
+#define TENLOG2OVERLOG10 3.0103
+
 
 /* Sequencing technologies for seq_t.seq_tech; 5 bits, so max=31 */
 #define STECH_UNKNOWN    0
@@ -271,18 +273,31 @@ double tech_undercall[] = {
     1.63, // ont
 };
 
-static double prior[25];     /* Sum to 1.0 */
-static double lprior15[15];  /* 15 combinations of {ACGT*} */
+#ifdef __GNUC__
+#define ALIGNED(x) __attribute((aligned(x)))
+#else
+#define ALIGNED(x)
+#endif
+
+static double prior[25]    ALIGNED(16);  /* Sum to 1.0 */
+static double lprior15[15] ALIGNED(16);  /* 15 combinations of {ACGT*} */
 
 /* Precomputed matrices for the consensus algorithm */
-static double pMM[9][101], p__[9][101], p_M[9][101], po_[9][101], poM[9][101];
-static double poo[9][101], puu[9][101], pum[9][101], pmm[9][101];
+static double pMM[9][101] ALIGNED(16);
+static double p__[9][101] ALIGNED(16);
+static double p_M[9][101] ALIGNED(16);
+static double po_[9][101] ALIGNED(16);
+static double poM[9][101] ALIGNED(16);
+static double poo[9][101] ALIGNED(16);
+static double puu[9][101] ALIGNED(16);
+static double pum[9][101] ALIGNED(16);
+static double pmm[9][101] ALIGNED(16);
 
-static double e_tab_a[1002];
+static double e_tab_a[1002]  ALIGNED(16);
 static double *e_tab = &e_tab_a[500];
-static double e_tab2_a[1002];
+static double e_tab2_a[1002] ALIGNED(16);
 static double *e_tab2 = &e_tab2_a[500];
-static double e_log[501];
+static double e_log[501]     ALIGNED(16);
 
 /*
  * Lots of confusing matrix terms here, so some definitions will help.
@@ -435,35 +450,6 @@ static void consensus_init(double p_het) {
     }
 }
 
-/* 
- * See "A Fast, Compact Approximation of the Exponential Function"
- * by NN. Schraudolph, Neural Computation, 1999
- */
-#if 0
-static inline double fast_exp(double y) {
-    union {
-	double d;
-	int i, j;
-    } x;
-
-    x.i = 0;
-    x.j = 1512775 * y + 1072632447;
-
-    return x.d;
-}
-
-static inline double fast_log(double y) {
-    union {
-	double d;
-	int i, j;
-    } x;
-    
-    x.d = y;
-    return (x.j - 1072632447.0) / 1512775;
-}
-#endif
-
-#if 1
 static inline double fast_exp(double y) {
     if (y >= -50 && y <= 50)
 	return e_tab2[(int)(y*10)];
@@ -477,25 +463,31 @@ static inline double fast_exp(double y) {
 
     return e_tab[(int)y];
 }
-#endif
 
 /*Taylor (deg 3) implementation of the log: http://www.flipcode.com/cgi-bin/fcarticles.cgi?show=63828*/
-inline float fast_log (float val)
+inline double fast_log2 (double val)
 {
-   register int *const     exp_ptr = ((int*)&val);
-   register int            x = *exp_ptr;
-   register const int      log_2 = ((x >> 23) & 255) - 128;
-   x &= ~(255 << 23);
-   x += 127 << 23;
+   register int64_t *const     exp_ptr = ((int64_t*)&val);
+   register int64_t            x = *exp_ptr;
+   register const int      log_2 = ((x >> 52) & 2047) - 1024;
+   x &= ~(2047LL << 52);
+   x += 1023LL << 52;
    *exp_ptr = x;
 
    val = ((-1.0f/3) * val + 2) * val - 2.0f/3;
 
-   return ((val + log_2)* 0.69314718);
+   return val + log_2;
+}
+
+inline double fast_log (double val) {
+    return fast_log2(val)*0.69314718;
 }
 
 //#define fast_exp exp
 //#define fast_log log
+
+#define ph_log(x) (-TENLOG2OVERLOG10*fast_log2((x)))
+
 
 /*
  * As per calculate_consensus_bit_het but for a single pileup column.
@@ -509,21 +501,23 @@ int calculate_consensus_pileup(int flags,
     static double q2p[101], mqual_pow[256];
     double min_e_exp = DBL_MIN_EXP * log(2) + 1;
 
-    double S[15] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+    double S[15] ALIGNED(16) = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
     double sumsC[6] = {0,0,0,0,0,0}, sumsE = 0;
     int depth = 0;
 
     /* Map the 15 possible combinations to 1-base or 2-base encodings */
-    static int map_sing[15] = {0, 5, 5, 5, 5,
-			          1, 5, 5, 5,
-			             2, 5, 5,
-			                3, 5,
-			                   4};
-    static int map_het[15] = {0,  1,  2,  3,  4,
-			          6,  7,  8,  9,
-			             12, 13, 14,
-			                 18, 19,
-			                     24};
+    static int map_sing[15] ALIGNED(16) =
+	{0, 5, 5, 5, 5,
+	    1, 5, 5, 5,
+	       2, 5, 5,
+	          3, 5,
+	             4};
+    static int map_het[15] ALIGNED(16) =
+	{0,  1,  2,  3,  4,
+	     6,  7,  8,  9,
+	        12, 13, 14,
+	            18, 19,
+	                24};
 
     if (!init_done) {
 	init_done = 1;
@@ -579,7 +573,7 @@ int calculate_consensus_pileup(int flags,
 	    double _m = mqual_pow[b->core.qual];
 
 	    //printf("%c %d -> %d, %f %f\n", "ACGT*N"[base], qual, (int)(-TENOVERLOG10 * log(1-(_m * _p + (1 - _m)/4))), _p, _m);
-	    qual = -TENOVERLOG10 * fast_log(1-(_m * _p + (1 - _m)/4));
+	    qual = ph_log(1-(_m * _p + (1 - _m)/4));
 	}
 
 	/* Quality 0 should never be permitted as it breaks the math */
@@ -648,12 +642,11 @@ int calculate_consensus_pileup(int flags,
 	shift = -DBL_MAX;
 	max = -DBL_MAX;
 	max_het = -DBL_MAX;
+
 	for (j = 0; j < 15; j++) {
 	    S[j] += lprior15[j];
-	    if (shift < S[j]) {
+	    if (shift < S[j])
 		shift = S[j];
-		//het_call = j;
-	    }
 
 	    /* Only call pure AA, CC, GG, TT, ** for now */
 	    if (j != 0 && j != 5 && j != 9 && j != 12 && j != 14) {
@@ -664,7 +657,7 @@ int calculate_consensus_pileup(int flags,
 		continue;
 	    }
 
-	    if (max < S[j]) {
+    if (max < S[j]) {
 		max = S[j];
 		call = j;
 	    }
@@ -681,12 +674,8 @@ int calculate_consensus_pileup(int flags,
 	 */
 	for (j = 0; j < 15; j++) {
 	    S[j] -= shift;
-	    if (S[j] > min_e_exp) {
-		//S[j] = exp(S[j]);
-		S[j] = fast_exp(S[j]);
-	    } else {
-		S[j] = DBL_MIN;
-	    }
+	    double e = fast_exp(S[j]);
+	    S[j] = (S[j] > min_e_exp) ? e : DBL_MIN;
 	    norm[j] = 0;
 	}
 
@@ -706,13 +695,14 @@ int calculate_consensus_pileup(int flags,
 
 	    cons->call     = map_sing[call];
 	    if (norm[call] == 0) norm[call] = DBL_MIN;
-	    ph = -TENOVERLOG10 * fast_log(norm[call]) + .5;
+	    ph = ph_log(norm[call]) + .5;
 	    cons->phred = ph > 255 ? 255 : (ph < 0 ? 0 : ph);
 	    //cons->call_prob1 = norm[call]; // p = 1 - call_prob1
 
 	    cons->het_call = map_het[het_call];
 	    if (norm[het_call] == 0) norm[het_call] = DBL_MIN;
-	    ph = TENOVERLOG10 * (fast_log(S[het_call]) - fast_log(norm[het_call])) + .5;
+	    ph = TENLOG2OVERLOG10 * (fast_log2(S[het_call]) - fast_log2(norm[het_call])) + .5;
+
 	    cons->het_phred = ph;
 	    //cons->het_prob_n = S[het_call]; // p = prob_n / prob_d
 	    //cons->het_prob_d = norm[het_call];
