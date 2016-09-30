@@ -1,0 +1,181 @@
+Concept:
+
+Use a noddy het calling algorithm on single sample data to determine
+whether a consensus call appears to be obvious.  If so, the qualities
+are not needed.  This is true even for homozygous differences to the
+reference or obvious heterozygous sites. (100T and 90A with a usual
+spread of quality values is blatantly an A/T het and no caller will
+need to know the actual qualities.)
+
+If the call is suspect, due to low depth, dubious quality values, or
+various other heuristics, then keep the qualities.  Optionally also
+keep neighbouring qualities too.  This is applied to all bases in this
+column and not only the ones that appear to differ to the norm. 
+
+One key point here is where an indel is observed within a short
+tandem repeat.  Due to potential mis-alignment (especially common as
+the STRs regularly have length variation) we want to keep qualities
+for the entire length of the STR, plus possibly a few bases either
+side.  In short, if an indel realigner may shuffle in a base then
+we'd like those qualities to also be kept intact.
+
+Note that this entire process is referenceless as we are attempting to
+analyse the robustness of the pileup rather than directly call
+mutations. 
+
+
+Paramters for localised quality removal
+=======================================
+
+SNP/Indel Score
+---------------
+
+This is just the consensus call, computed using a basic bayesian
+approach.  It assumes all differences are either mutations or errors,
+but it does also consider the read mapping score.  It has a small flat
+adjustment to the mapping score to accommodate incorrect mapping
+scores due to unknown variation between target genome and reference
+genome.
+
+There is also the option to compute a consensus call completely
+ignoring the mapping score and to filter on this method, or both.  (The
+default options disable this second calculation.)
+
+
+Discrepancy
+-----------
+
+The consensus call is asking "what is the most likely base given this
+data?".  With high depth, we can easily get extreme confidence in the
+call being correct, working on the assumption that all differences are
+either base calling errors or mutations.
+
+The discrepancy call is asking "what is the chance we have additional
+data misaligned to this location?".  Given sufficient depth of data of
+known error rates we can get an expectation of how many differences we
+would expect to observe due to errors.  Observing many more than we
+expect leads to a higher discrepancy score.
+
+
+Rationale for whole-read quality presevation
+============================================
+
+While we can estimate whether removing quality values will change the
+output from a SNP caller, it is possible that we may subsequently
+realign our data to a new version of the reference and in doing so
+turn something that previously looked like an obvious call into
+something less obvious.
+
+Ideally if we can spot any tell-tale signs that indicate realignment
+to a new reference may lead to differences, then we can consider
+storing the qualities verbatim for the entire read.
+
+
+Over depth
+----------
+
+Consider a region of 5 repeated fragments of data in the
+reference, 7 in our target genome.  One of those 7 has a dubious
+heterozygous call, maybe 20/80 ratio.  We'd normally want to keep the
+qualities for that site.
+
+When these 2 are combined with the last of the other 5 copies though,
+this 20/80 ratio ends up looking like 7/93; perhaps sufficiently high
+to fall below our threshold for preserving quality values.
+
+
+Mapping quality fraction
+------------------------
+
+Regions where more than a certain percentage of data has low mapping
+quality means that it is likely a repeat.  We already have the option
+of storing base qualities for reads with low mapping quality, incase
+we wish to further analyse them (eg deliberately collapsing and then
+using a clustering algorithm to tease apart copies of the repeats from
+each other).  However in any region of low mapping quality, some
+aligners will still give a few read-pairs high mapping quality.  In
+such cases we may wish to treat all reads as having unreliable
+placement.
+
+
+Soft-clipping
+-------------
+
+If a high fraction of reads at a specific location have soft-clipping
+present, then this probably indicates an large indel.  (TODO: we
+should also check for concordant soft-clipping, where the clipped data
+is in agreement with other clipped data.  I already have code to
+detect this situation.)
+
+We can therefore store the quality values for all bases in the read,
+rather than just the clipped portion. (FIXME: CHECK if we do store
+clipped qualities?)
+
+
+Indel size analysis
+-------------------
+
+We would normally expect insertions to have a bi-modal distribution
+(making assumptions of this being a single sample).  If this is not
+the case, then it implies our data is possibly misaligned, perhaps due
+to copy number variations.  We may wish to store all qualities in such
+cases.
+
+
+Spanning indel
+--------------
+
+Comparing the average read depth to the depth of reads spanning an
+insertion, we can spot locations where the depth has significantly
+dropped.  These typically indicate a large indel and usually, but
+not always, have large amounts of soft-clipping.
+
+
+Compression levels
+==================
+
+Higher is more aggressive, throwing away more quality values.
+
+                        1       3       5       7       9
+Keep if SNP <           75      75      75      75     *70
+Keep if indel <         150     150     150     150    *125
+Keep if discrep >       1.00    1.00    1.00    1.00   *1.50
+indel STR mul:          2.00   *1.10    1.10    1.10    1.10
+indel STR add:          1      *2       2       2       2
+SNP   STR mul:          1.00    1.00   *0.00    0.00    0.00
+SNP   STR add:          5      *0       0       0       0
+Qual low  1..25 ->      10      10      10      10      10
+Qual high 25..  ->      40      40      40      40      40
+Keep if mqual <=        5      *0       0       0       0
+Low mqual fraction      0.6     0.6     0.6    *1.0     1.0
+Ins. length fraction    0.1     0.1     0.1    *1.0     1.0
+Indel overlap fract.    0.4     0.4     0.4    *0.0     0.0
+Over depth              2       2       2      *999     999
+
+
+For a SNP or Indel within a short tandem repeat (STR) of size N, we
+keep qualities for an additional mul*N+add flanking either side, using
+the STR mul and STR add parameters.
+
+Eg with level 1, snp at X.
+STR len 1 => keep 2*1+1 == 3
+STR len 4 => keep 2*4+1 == 9
+
+       -X----
+AGCTCCGTATATAGGACTGAGGTAG
+     qqqqqqqqqqqqq
+
+At level 3
+
+       -X----
+AGCTCCGTATATAGGACTGAGGTAG
+      qqqqqqqq
+
+At level 9
+
+       -X----
+AGCTCCGTATATAGGACTGAGGTAG
+        q
+
+TODO: check this with real examples!
+
