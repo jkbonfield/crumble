@@ -930,8 +930,10 @@ int flush_bam_list(pileup_cd *cd, cram_lossy_params *p, bam_sorted_list *bl,
     // Sanity check
     int last_pos = 0;
     RB_FOREACH(bi, bam_sort, bl) {
-	assert(bi->b->core.pos >= last_pos);
-	last_pos = bi->b->core.pos;
+	if (!(bi->b->core.flag & BAM_FUNMAP)) {
+	    assert(bi->b->core.pos >= last_pos);
+	    last_pos = bi->b->core.pos;
+	}
     }
 
     for (bi = RB_MIN(bam_sort, bl); bi; bi = next) {
