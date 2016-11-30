@@ -197,6 +197,7 @@ typedef struct {
     double indel_ov_perc;
     FILE *bed_fp;
     int verbose;
+    int pblock;
 } cram_lossy_params;
 
 //-----------------------------------------------------------------------------
@@ -734,6 +735,39 @@ int calculate_consensus_pileup(int flags,
     return 0;
 }
 
+// Applies a basic P-block algorithm to a string of quality values.
+// All blocks of qualities within +/- level get replaced by a representative
+// value such that the delta is within 'level'.
+// The original paper had a more complex method, but this is just (min+max)/2.
+void pblock(bam1_t *b, int level) {
+    if (!b)
+	return;
+
+    int len = b->core.l_qseq, i, j, qmin = INT_MAX, qmax = INT_MIN;
+    int last_qmin = 0, last_qmax = 0, mid;
+    uint8_t *qual = bam_get_qual(b);
+
+    level *= 2;
+
+    for (i = j = 0; i < len; i++) {
+	if (qmin > qual[i])
+	    qmin = qual[i];
+	if (qmax < qual[i])
+	    qmax = qual[i];
+	if (qmax - qmin > level) {
+	    mid = (last_qmin + last_qmax) / 2;
+	    memset(qual+j, mid, i-j);
+	    qmin = qmax = qual[i];
+	    j = i;
+	}
+	last_qmin = qmin;
+	last_qmax = qmax;
+    }
+
+    mid = (last_qmin + last_qmax) / 2;
+    memset(qual+j, mid, i-j);
+}
+
 //-----------------------------------------------------------------------------
 // Tree of bam objects, sorted by chromosome & position
 
@@ -951,6 +985,8 @@ int flush_bam_list(pileup_cd *cd, cram_lossy_params *p, bam_sorted_list *bl,
 		qual[x] &= ~0x80;
 	}
 	cd->count_out++;
+	if (p->pblock)
+	    pblock(bi->b, p->pblock);
 	if (sam_write1(out, header, bi->b) < 0)
 	    return -1;
 	bam_destroy1(bi->b);
@@ -1633,6 +1669,8 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	do {
 	    purge_tags(p, cd.b_unmap);
 	    cd.count_out++;
+	    if (p->pblock)
+		pblock(cd.b_unmap, p->pblock);
 	    if (sam_write1(out, header, cd.b_unmap) < 0)
 		return -1;
 	    next = (cd.iter
@@ -1717,6 +1755,8 @@ void usage(FILE *fp) {
     fprintf(fp, "-Q int            Minimum snp call confidence [%d]\n", MIN_QUAL_B);
     fprintf(fp, "-D int            Minimum indel call confidence [%d]\n", MIN_INDEL_B);
     fprintf(fp, "-X float          Minimum discrepancy score [%.1f]\n", MIN_DISCREP_B);
+    fprintf(fp, "\n(Horizontal quality smoothing via P-block)\n");
+    fprintf(fp, "-p int            P-block algorithm; quality values +/- 'int' [0]\n");
     fprintf(fp, "\n(Standard compression levels combining the above.)\n");
     fprintf(fp, "-1                Synonym for -s1.0,5 -i2.0,1 -m5\n");
     fprintf(fp, "-3                Synonym for -s1.0,0\n");
@@ -1775,6 +1815,7 @@ int main(int argc, char **argv) {
 	.over_depth    = OVER_DEPTH,        // -P
 	.indel_ov_perc = INDEL_OVERLAP_PERC,// -V
 	.verbose       = 0,                 // -v
+	.pblock        = 0,                 // -p
     };
 
     //  ...   ..  ..    ..... .
@@ -1782,7 +1823,7 @@ int main(int argc, char **argv) {
     //   ..    .  .. ...  . . . .
     // ABCDEFGHIJKLMNOPQRSTUVWXYZ
 
-    while ((opt = getopt(argc, argv, "I:O:q:d:x:Q:D:X:m:l:u:c:i:L:s:t:T:hr:b:vC:M:Z:P:V:13579")) != -1) {
+    while ((opt = getopt(argc, argv, "I:O:q:d:x:Q:D:X:m:l:u:c:i:L:s:t:T:hr:b:vC:M:Z:P:V:p:13579")) != -1) {
 	switch (opt) {
 	case 'I':
 	    hts_parse_format(&in_fmt, optarg);
@@ -1885,6 +1926,10 @@ int main(int argc, char **argv) {
 
 	case 'V':
 	    params.indel_ov_perc = atof(optarg);
+	    break;
+
+	case 'p':
+	    params.pblock = atoi(optarg);
 	    break;
 
 	case '9':

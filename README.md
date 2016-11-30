@@ -18,6 +18,10 @@ It also keeps all quality values for reads with mapping quality 0 (they may need
 to be realigned elsewhere) and within the proximity of any uncertain indel calls,
 where "proximity" is determined by a simply short tandem repeat search.
 
+To control the output format use -O FMT.  This may also be used to add
+additional parameters.  Eg "-O bam,nthreads=8" may be used to enable
+multi-threaded BGZF compression when writing the BAM file.
+
 **pipeline.sh** is a noddy shell script to run samtools mpileup / bcftools call
 and freebayes on a sam/bam file and compares the results against a known truth set.
 Earlier results from some of these can be seen in BENCHMARKS_chr20, although this is
