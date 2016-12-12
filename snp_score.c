@@ -1028,8 +1028,10 @@ int pileup_callback(void *vp, bam1_t *b) {
 		if (bam_cigar_type(bam_cigar_op(cig[i])) & 2)
 		    break;
 	    if (i == n) {
+#ifdef DEBUG
 		printf("Note: %s mapped at #%d,%d but has no cigar ref op!\n",
 		       bam_get_qname(b), b->core.tid, b->core.pos);
+#endif
 		unmap = 1;
 	    }
 	}
