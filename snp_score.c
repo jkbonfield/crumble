@@ -958,7 +958,7 @@ typedef struct {
 } pileup_cd;
 
 int flush_bam_list(pileup_cd *cd, cram_lossy_params *p, bam_sorted_list *bl,
-		   int before, samFile *out, bam_hdr_t *header) {
+		   int before_tid, int before, samFile *out, bam_hdr_t *header) {
     bam_sorted_item *bi, *next;
 
     // Sanity check
@@ -972,7 +972,8 @@ int flush_bam_list(pileup_cd *cd, cram_lossy_params *p, bam_sorted_list *bl,
 
     for (bi = RB_MIN(bam_sort, bl); bi; bi = next) {
 	next = RB_NEXT(bam_sort, bl, bi);
-	if (bi->end_pos >= before)
+	if (bi->end_pos >= before ||
+	    (bi->b->core.tid >= 0 && bi->b->core.tid >= before_tid))
 	    break;
 
 	purge_tags(p, bi->b);
@@ -1210,7 +1211,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 
 	if (tid != last_tid) {
 	    // Ensure b_hist is only per chromosome
-	    if (flush_bam_list(&cd, p, b_hist, INT_MAX, out, header) < 0)
+	    if (flush_bam_list(&cd, p, b_hist, tid, INT_MAX, out, header) < 0)
 		return -1;
 	    last_tid = tid;
 	    min_pos = INT_MAX, max_pos = 0;
@@ -1646,7 +1647,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	}
 
 	// Flush history (preserving sort order).
-	if (flush_bam_list(&cd, p, b_hist, left_most, out, header) < 0)
+	if (flush_bam_list(&cd, p, b_hist, INT_MAX, left_most, out, header) < 0)
 	    return -1;
     }
 
@@ -1660,7 +1661,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	bi = next;
     }
 
-    if (flush_bam_list(&cd, p, b_hist, INT_MAX, out, header) < 0)
+    if (flush_bam_list(&cd, p, b_hist, INT_MAX, INT_MAX, out, header) < 0)
 	return -1;
 
     // Handle trailing unmapped reads
