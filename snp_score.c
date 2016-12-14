@@ -146,6 +146,7 @@
 #include <float.h>
 #include <getopt.h>
 #include <inttypes.h>
+#include <unistd.h>
 
 #include <htslib/sam.h>
 #include <htslib/khash.h>
@@ -2012,7 +2013,13 @@ int main(int argc, char **argv) {
 
     init_bins(&params);
 
-    char *fnin = optind < argc ? argv[optind++] : "-";
+    char *fnin = NULL;
+    if ( optind>=argc ) {
+        if ( !isatty(STDIN_FILENO) ) fnin = "-";  // reading from stdin
+        else { usage(stdout); return 1; }
+    }
+    else fnin = argv[optind++];
+
     if (!(in = sam_open_format(fnin, "r", &in_fmt))) {
 	perror(argv[optind]);
 	return 1;
