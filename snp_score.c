@@ -49,7 +49,7 @@
 
 //#define DEBUG
 
-#define CRUMBLE_VERSION "0.6"
+#define CRUMBLE_VERSION "0.7"
 
 /*
  * Prunes quality based on snp calling score.
@@ -199,6 +199,10 @@ typedef struct {
     FILE *bed_fp;
     int verbose;
     int pblock;
+
+    // For BD/BI tag adjustments
+    int BD_low, BD_mid, BD_high;
+    int BI_low, BI_mid, BI_high;
 } cram_lossy_params;
 
 //-----------------------------------------------------------------------------
@@ -944,6 +948,36 @@ void purge_tags(cram_lossy_params *settings, bam1_t *b) {
             s_from = s;
         }
         b->l_data = s_to - b->data;
+    }
+
+    if (settings->BD_low || settings->BD_mid || settings->BD_high) {
+        uint8_t *t = bam_get_aux(b);
+        while (t < b->data + b->l_data) {
+	    if (t[0] == 'B' && t[1] == 'D') {
+		uint8_t *c = t+2;
+		while(*++c) {
+		    *c = (*c >= settings->BD_mid)
+			? settings->BD_high
+			: settings->BD_low;
+		}
+	    }
+	    t = skip_aux(t+2);
+        }
+    }
+
+    if (settings->BI_low || settings->BI_mid || settings->BI_high) {
+        uint8_t *t = bam_get_aux(b);
+        while (t < b->data + b->l_data) {
+	    if (t[0] == 'B' && t[1] == 'I') {
+		uint8_t *c = t+2;
+		while(*++c) {
+		    *c = (*c >= settings->BI_mid)
+			? settings->BI_high
+			: settings->BI_low;
+		}
+	    }
+	    t = skip_aux(t+2);
+        }
     }
 }
 
@@ -1761,6 +1795,13 @@ void usage(FILE *fp) {
     fprintf(fp, "-X float          Minimum discrepancy score [%.1f]\n", MIN_DISCREP_B);
     fprintf(fp, "\n(Horizontal quality smoothing via P-block)\n");
     fprintf(fp, "-p int            P-block algorithm; quality values +/- 'int' [0]\n");
+    fprintf(fp, "\n(BD and BI aux tag binary-binning; off by default)\n");
+    fprintf(fp, "-f qual_cutoff    Quantise BD:Z: tags to two values (or one if both equal).\n");
+    fprintf(fp, "-g qual_upper       If >= 'qual_cutoff' [0] replace by 'qual_upper' [0]\n");
+    fprintf(fp, "-e qual_lower       otherwise replace by 'qual_lower' [0].\n");
+    fprintf(fp, "-F qual_cutoff    Quantise BI:Z: tags to two values (or one if both equal).\n");
+    fprintf(fp, "-G qual_upper       If >= 'qual_cutoff' [0] replace by 'qual_upper' [0]\n");
+    fprintf(fp, "-E qual_lower       otherwise replace by 'qual_lower' [0].\n");
     fprintf(fp, "\n(Standard compression levels combining the above.)\n");
     fprintf(fp, "-1                Synonym for -s1.0,5 -i2.0,1 -m5\n");
     fprintf(fp, "-3                Synonym for -s1.0,0\n");
@@ -1820,14 +1861,20 @@ int main(int argc, char **argv) {
 	.indel_ov_perc = INDEL_OVERLAP_PERC,// -V
 	.verbose       = 0,                 // -v
 	.pblock        = 0,                 // -p
+	.BD_low        = 0,                 // -e
+	.BD_mid        = 0,                 // -f
+	.BD_high       = 0,                 // -g
+	.BI_low        = 0,                 // -E
+	.BI_mid        = 0,                 // -F
+	.BI_high       = 0,                 // -G
     };
 
-    //  ...   ..  ..    ..... .
+    //  ........  ..    ..... .
     // abcdefghijklmnopqrstuvwxyz
-    //   ..    .  .. ...  . . . .
+    //   ..... .  .. ...  . . . .
     // ABCDEFGHIJKLMNOPQRSTUVWXYZ
 
-    while ((opt = getopt(argc, argv, "I:O:q:d:x:Q:D:X:m:l:u:c:i:L:s:t:T:hr:b:vC:M:Z:P:V:p:13579")) != -1) {
+    while ((opt = getopt(argc, argv, "I:O:q:d:x:Q:D:X:m:l:u:c:i:L:s:t:T:hr:b:vC:M:Z:P:V:p:e:f:g:E:F:G:13579")) != -1) {
 	switch (opt) {
 	case 'I':
 	    hts_parse_format(&in_fmt, optarg);
@@ -1934,6 +1981,30 @@ int main(int argc, char **argv) {
 
 	case 'p':
 	    params.pblock = atoi(optarg);
+	    break;
+
+	case 'e':
+	    params.BD_low = atoi(optarg)+33;
+	    break;
+
+	case 'f':
+	    params.BD_mid = atoi(optarg)+33;
+	    break;
+
+	case 'g':
+	    params.BD_high = atoi(optarg)+33;
+	    break;
+
+	case 'E':
+	    params.BI_low = atoi(optarg)+33;
+	    break;
+
+	case 'F':
+	    params.BI_mid = atoi(optarg)+33;
+	    break;
+
+	case 'G':
+	    params.BI_high = atoi(optarg)+33;
 	    break;
 
 	case '9':
