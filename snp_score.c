@@ -112,7 +112,7 @@
 //#define MIN_DISCREP_B 1.5
 
 // Extra growth to expand indel qual region.
-// New region = (old_region + STR_ADD) * STR_MUL
+// New region = old_region +/- (region_len*STR_MUL + STR_ADD)
 #define I_STR_MUL 1.1
 #define S_STR_MUL 0.0
 
@@ -1126,6 +1126,23 @@ int ref2query_pos(bam1_t *b, int pos) {
 //     }
 // }
 
+// Converts a position on a query sequence to a position on the reference.
+int bam_qpos2rpos(bam1_t *b, int qpos) {
+    const uint32_t *cigar = bam_get_cigar(b);
+    int k, rpos = b->core.pos, aqpos = 0; // accumulated qpos
+    for (k = 0; k < b->core.n_cigar && aqpos < qpos; k++) {
+	if (bam_cigar_type(bam_cigar_op(cigar[k]))&2) {
+	    if (bam_cigar_oplen(cigar[k]) <= qpos - aqpos)
+		rpos += bam_cigar_oplen(cigar[k]);
+	    else
+		rpos += qpos - aqpos;
+	}
+	if (bam_cigar_type(bam_cigar_op(cigar[k]))&1)
+	    aqpos += bam_cigar_oplen(cigar[k]);
+    }
+    return rpos;
+}
+
 // Extend min/max reference positions based on any STRs at apos/rpos (abs/rel)
 // into seq b.  This is used to find the extents over which we may wish to
 // preserve scores given something important is going on at apos (typically
@@ -1166,16 +1183,18 @@ int mask_LC_regions(cram_lossy_params *p, int is_indel, bam1_t *b,
 	//	elt->start, elt->end,
 	//	elt->end - elt->start+1, &seq[elt->start]);
 
+	elt->start = bam_qpos2rpos(b, elt->start);
+	elt->end   = bam_qpos2rpos(b, elt->end);
 	if (is_indel) {
-	    if (*min_pos > apos + elt->start - rpos - p->iSTR_add)
-		*min_pos = apos + elt->start - rpos - p->iSTR_add;
-	    if (*max_pos < apos + elt->end - rpos+1 + p->iSTR_add)
-		*max_pos = apos + elt->end - rpos+1 + p->iSTR_add;
+	    if (*min_pos > elt->start)
+		*min_pos = elt->start;
+	    if (*max_pos < elt->end)
+		*max_pos = elt->end;
 	} else {
-	    if (*min_pos > apos + elt->start - rpos - p->sSTR_add)
-		*min_pos = apos + elt->start - rpos - p->sSTR_add;
-	    if (*max_pos < apos + elt->end - rpos+1 + p->sSTR_add)
-		*max_pos = apos + elt->end - rpos+1 + p->sSTR_add;
+	    if (*min_pos > elt->start)
+		*min_pos = elt->start;
+	    if (*max_pos < elt->end)
+		*max_pos = elt->end;
 	}
 
 	DL_DELETE(reps, elt);
@@ -1483,11 +1502,15 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 
 		// Extra growth, paranoia.
 		if (is_indel) {
-		    min_pos2 = MIN(min_pos2, pos - (pos-min_pos)*p->iSTR_mul);
-		    max_pos2 = MAX(max_pos2, pos + (max_pos-pos)*p->iSTR_mul);
+		    min_pos2 = MIN(min_pos2,
+				   pos - (pos-min_pos)*p->iSTR_mul - p->iSTR_add);
+		    max_pos2 = MAX(max_pos2,
+				   pos + (max_pos-pos)*p->iSTR_mul + p->iSTR_add);
 		} else {
-		    min_pos2 = MIN(min_pos2, pos - (pos-min_pos)*p->sSTR_mul);
-		    max_pos2 = MAX(max_pos2, pos + (max_pos-pos)*p->sSTR_mul);
+		    min_pos2 = MIN(min_pos2,
+				   pos - (pos-min_pos)*p->sSTR_mul - p->sSTR_add);
+		    max_pos2 = MAX(max_pos2,
+				   pos + (max_pos-pos)*p->sSTR_mul + p->sSTR_add);
 		}
 	    }
 
@@ -2016,6 +2039,7 @@ int main(int argc, char **argv) {
 	    params.ins_len_perc = 1.0;
 	    params.indel_ov_perc = 0;
 	    params.over_depth = 999;
+	    params.iSTR_mul = 1.0;
 	    break;
 
 	case '7':

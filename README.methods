@@ -140,7 +140,7 @@ Higher is more aggressive, throwing away more quality values.
 Keep if SNP <           75      75      75      75     *70
 Keep if indel <         150     150     150     150    *125
 Keep if discrep >       1.00    1.00    1.00    1.00   *1.50
-indel STR mul:          2.00   *1.10    1.10    1.10    1.10
+indel STR mul:          2.00   *1.10    1.10    1.10    1.00
 indel STR add:          1      *2       2       2       2
 SNP   STR mul:          1.00    1.00   *0.00    0.00    0.00
 SNP   STR add:          5      *0       0       0       0
