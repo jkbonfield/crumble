@@ -199,6 +199,7 @@ typedef struct {
     FILE *bed_fp;
     int verbose;
     int pblock;
+    int softclip;
 
     // For BD/BI tag adjustments
     int BD_low, BD_mid, BD_high;
@@ -1641,6 +1642,18 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	    if (preserve)
 		*qual |= 0x80;
 
+	    if (!keep_qual && p->softclip) {
+		if (plp[i].is_head) {
+		    int x;
+		    for (x = 1; x <= plp[i].qpos; x++)
+			qual[-x] = bin2[qual[-x]];
+		} else if (plp[i].is_tail) {
+		    int x;
+		    for (x = b->core.l_qseq - plp[i].qpos -1; x>0; x--)
+			qual[x] = bin2[qual[x]];
+		}
+	    }
+
 	    if (!(*qual & 0x80)) {
 		if (base == call1 || base == call2) {
 		    *qual = p->qhigh;
@@ -1794,6 +1807,7 @@ void usage(FILE *fp) {
 "-l qual_lower         'qual_cutoff' [%d] are quantised to 'qual_lower' [%d]\n"
 "-u qual_upper         and 'qual_upper' [%d] based on agreement to consensus.\n",
 	    QM, QL, QH);
+    fprintf(fp, "-S                Quantise qualities (with -[clu] options) in soft-clips too.\n");
     fprintf(fp, "-m min_mqual      Keep qualities for seqs with mapping quality <= mqual [%d].\n", MIN_MQUAL);
     fprintf(fp, "-L bool           Whether mismatching bases can have qualities lowered [%d]\n", REDUCE_QUAL);
     fprintf(fp, "-i STR_mul,add    Adjust indel size by (STR_size+add)*mul [%.1f,%d]\n", I_STR_MUL, I_STR_ADD);
@@ -1890,14 +1904,15 @@ int main(int argc, char **argv) {
 	.BI_low        = 0,                 // -E
 	.BI_mid        = 0,                 // -F
 	.BI_high       = 0,                 // -G
+	.softclip      = 0,                 // -S
     };
 
     //  ........  ..    ..... .
     // abcdefghijklmnopqrstuvwxyz
-    //   ..... .  .. ...  . . . .
+    //   ..... .  .. ... .. . . .
     // ABCDEFGHIJKLMNOPQRSTUVWXYZ
 
-    while ((opt = getopt(argc, argv, "I:O:q:d:x:Q:D:X:m:l:u:c:i:L:s:t:T:hr:b:vC:M:Z:P:V:p:e:f:g:E:F:G:13579")) != -1) {
+    while ((opt = getopt(argc, argv, "I:O:q:d:x:Q:D:X:m:l:u:c:i:L:s:t:T:hr:b:vC:M:Z:P:V:p:e:f:g:E:F:G:S13579")) != -1) {
 	switch (opt) {
 	case 'I':
 	    hts_parse_format(&in_fmt, optarg);
@@ -2064,6 +2079,10 @@ int main(int argc, char **argv) {
 	    params.iSTR_mul = 2.0;
 	    params.iSTR_add = 1;
 	    params.min_mqual = 5;
+	    break;
+
+	case 'S':
+	    params.softclip = 1;
 	    break;
 
 	case 'v':
