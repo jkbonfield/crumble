@@ -46,7 +46,6 @@
 // DONE: Trivial implementation is simply length concordance; if there
 // are many different lengths then it's probably suspect.
 
-
 //#define DEBUG
 
 #define CRUMBLE_VERSION "0.7"
@@ -87,7 +86,7 @@
 // Default params
 #define MAX_DEPTH 20000
 
-#define QL 10
+#define QL 5
 #define QM 25 // below => QL, else QH
 #define QH 40
 
@@ -96,6 +95,7 @@
 
 // Whether to allow quality reduction on mismatching bases (ie QL)
 #define REDUCE_QUAL 1
+#define BINARY_QUAL 0
 
 // Standard gap5 algorithm; set MIN_QUAL_A to 0 to disable
 #define MIN_QUAL_A 0
@@ -170,7 +170,7 @@ KHASH_SET_INIT_INT(aux_exists)
 typedef khash_t(aux_exists) *auxhash_t;
 
 typedef struct {
-    int    reduce_qual;
+    int    reduce_qual, binary_qual;
     int    iSTR_add,  sSTR_add;
     double iSTR_mul, sSTR_mul;
     int    qlow, qcutoff, qhigh;
@@ -213,6 +213,8 @@ static int bin2[256];
 
 void init_bins(cram_lossy_params *p) {
     int i;
+
+    // Binary mode - just high/low
     for (i = 0; i < p->qcutoff; i++)
 	bin2[i] = p->qlow;
     for (; i < 256; i++)
@@ -773,6 +775,18 @@ void pblock(bam1_t *b, int level) {
     mid = (last_qmin + last_qmax) / 2;
     memset(qual+j, mid, i-j);
 }
+
+// // Quantise qualities by bin[] array.  Alternative to pblock above
+// void qblock(bam1_t *b) {
+//     if (!b)
+// 	return;
+// 
+//     int len = b->core.l_qseq, i;
+//     uint8_t *qual = bam_get_qual(b);
+// 
+//     for (i = 0; i < len; i++)
+// 	qual[i] = bin[qual[i]];
+// }
 
 //-----------------------------------------------------------------------------
 // Tree of bam objects, sorted by chromosome & position
@@ -1655,11 +1669,17 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	    }
 
 	    if (!(*qual & 0x80)) {
+		// no need to preserve quals
 		if (base == call1 || base == call2) {
+		    // base matches hom or het call; increase confidence to fixed amount
 		    *qual = p->qhigh;
 		} else if (p->reduce_qual) {
-		    //*qual = p->qlow;
-		    *qual = bin2[*qual];
+		    // base mismatches call, but call is confident. => reduce qual.
+		    // bases in the consensus that don't match the expected heterozygous call.
+		    if (p->binary_qual)
+			*qual = bin2[*qual];
+		    else
+			*qual = p->qlow;
 		}
 	    }
 	}
@@ -1810,6 +1830,7 @@ void usage(FILE *fp) {
     fprintf(fp, "-S                Quantise qualities (with -[clu] options) in soft-clips too.\n");
     fprintf(fp, "-m min_mqual      Keep qualities for seqs with mapping quality <= mqual [%d].\n", MIN_MQUAL);
     fprintf(fp, "-L bool           Whether mismatching bases can have qualities lowered [%d]\n", REDUCE_QUAL);
+    fprintf(fp, "-B                If set, replace quals in good regions with low/high [%sset]\n", BINARY_QUAL ? "" : "un");
     fprintf(fp, "-i STR_mul,add    Adjust indel size by (STR_size+add)*mul [%.1f,%d]\n", I_STR_MUL, I_STR_ADD);
     fprintf(fp, "-s STR_mul,add    Adjust SNP size by (STR_size+add)*mul [%.1f,%d]\n", S_STR_MUL, S_STR_ADD);
     fprintf(fp, "-r region         Limit input to region chr:pos(-pos) []\n");
@@ -1873,6 +1894,7 @@ int main(int argc, char **argv) {
 
     cram_lossy_params params = {
 	.reduce_qual   = REDUCE_QUAL,       // -L
+	.binary_qual   = BINARY_QUAL,       // -B
 	.iSTR_mul      = I_STR_MUL,         // -i
 	.iSTR_add      = I_STR_ADD,         // -i
 	.sSTR_mul      = S_STR_MUL,         // -s
@@ -1909,10 +1931,10 @@ int main(int argc, char **argv) {
 
     //  ........  ..    ..... .
     // abcdefghijklmnopqrstuvwxyz
-    //   ..... .  .. ... .. . . .
+    //  ...... .  .. ... .. . . .
     // ABCDEFGHIJKLMNOPQRSTUVWXYZ
 
-    while ((opt = getopt(argc, argv, "I:O:q:d:x:Q:D:X:m:l:u:c:i:L:s:t:T:hr:b:vC:M:Z:P:V:p:e:f:g:E:F:G:S13579")) != -1) {
+    while ((opt = getopt(argc, argv, "I:O:q:d:x:Q:D:X:m:l:u:c:i:L:Bs:t:T:hr:b:vC:M:Z:P:V:p:e:f:g:E:F:G:S13579")) != -1) {
 	switch (opt) {
 	case 'I':
 	    hts_parse_format(&in_fmt, optarg);
@@ -1970,6 +1992,10 @@ int main(int argc, char **argv) {
 
 	case 'L':
 	    params.reduce_qual = atoi(optarg);
+	    break;
+
+	case 'B':
+	    params.binary_qual = 1;
 	    break;
 
 	case 'r':
@@ -2106,8 +2132,13 @@ int main(int argc, char **argv) {
 	printf("indel STR add: %d\n",     params.iSTR_add);
 	printf("SNP   STR mul: %.2f\n",   params.sSTR_mul);
 	printf("SNP   STR add: %d\n",     params.sSTR_add);
-	printf("Qual low  1..%d -> %d\n", params.qcutoff, params.qlow);
-	printf("Qual high %d..  -> %d\n", params.qcutoff, params.qhigh);
+	if (params.binary_qual) {
+	    printf("Qual low  1..%d -> %d\n", params.qcutoff-1, params.qlow);
+	    printf("Qual high %d..  -> %d\n", params.qcutoff, params.qhigh);
+	} else {
+	    printf("Qual low  %d, used for discrepant bases in high conf call\n", params.qlow);
+	    printf("Qual high %d, used for matching bases in high conf call\n", params.qhigh);
+	}
 	printf("Keep if mqual <= %d\n",   params.min_mqual);
 	if (params.min_qual_A) {
 	    printf("Calls without mqual, keep qual if:\n");
