@@ -5,14 +5,20 @@ This directory contains some experimental tools that read a SAM/BAM/CRAM file,
 compute which confidence values to keep and which to omit, and emit a new file
 with most qualities removed.
 
-**Indel_only** is a noddy exploration that simply removes all qualities except
-those within _D_ distance of an indel.
+It depends on a pre-compiled htslib.  Preferably this will be against
+an installed copy, in which case you need to specify where to find it
+via e.g.:
 
-**Crumble** performs a more complete trial.  It uses a simple heterozygous
-consensus algorithm (ripped out of _gap5_) in a couple of modes to produce a
-consensus call with a confidence.  If the calls are highly confident then it
-throws away the quality values (setting them to fixed high or low depending on
-whether they agree with the call), otherwise it keeps them.
+    make CPPFLAGS="-I/usr/local/htslib/include" LDFLAGS="-L/usr/local/htslib/lib"
+
+As a simpler alternative, it will default to using a sibling ../htslib
+source tree, but this still needs compiling first.
+
+**Crumble** uses a simple heterozygous consensus algorithm (taken from
+_gap5_) in a couple of modes to produce a consensus call with a
+confidence.  If the calls are highly confident then it throws away the
+quality values (setting them to fixed high or low depending on whether
+they agree with the call), otherwise it keeps them.
 
 It also keeps all quality values for reads with mapping quality 0 (they may need
 to be realigned elsewhere) and within the proximity of any uncertain indel calls,
