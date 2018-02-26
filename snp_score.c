@@ -149,6 +149,7 @@
 #include <unistd.h>
 
 #include <htslib/sam.h>
+#include <htslib/cram.h>
 #include <htslib/khash.h>
 
 #include "str_finder.h"
@@ -200,6 +201,7 @@ typedef struct {
     int verbose;
     int pblock;
     int softclip;
+    int noPG;
 
     // For BD/BI tag adjustments
     int BD_low, BD_mid, BD_high;
@@ -1822,6 +1824,7 @@ void usage(FILE *fp) {
 	    "-I fmt(,opt...)   Input format and format-options [auto].\n"
 	    "-O fmt(,opt...)   Output format and format-options [SAM].\n");
     fprintf(fp, "-v                Increase verbosity\n");
+    fprintf(fp, "-z                Do not add an @PG SAM header line\n");
     fprintf(fp,
 "-c qual_cutoff    In highly confident regions, quality values above/below\n"
 "-l qual_lower         'qual_cutoff' [%d] are quantised to 'qual_lower' [%d]\n"
@@ -1927,14 +1930,15 @@ int main(int argc, char **argv) {
 	.BI_mid        = 0,                 // -F
 	.BI_high       = 0,                 // -G
 	.softclip      = 0,                 // -S
+	.noPG          = 0,                 // -z
     };
 
-    //  ........  ..    ..... .
+    //  ........  ..  ....... . .
     // abcdefghijklmnopqrstuvwxyz
     //  ...... .  .. ... .. . . .
     // ABCDEFGHIJKLMNOPQRSTUVWXYZ
 
-    while ((opt = getopt(argc, argv, "I:O:q:d:x:Q:D:X:m:l:u:c:i:L:Bs:t:T:hr:b:vC:M:Z:P:V:p:e:f:g:E:F:G:S13579")) != -1) {
+    while ((opt = getopt(argc, argv, "I:O:q:d:x:Q:D:X:m:l:u:c:i:L:Bs:t:T:hr:b:vC:M:Z:P:V:p:e:f:g:E:F:G:S13579z")) != -1) {
 	switch (opt) {
 	case 'I':
 	    hts_parse_format(&in_fmt, optarg);
@@ -2111,6 +2115,10 @@ int main(int argc, char **argv) {
 	    params.softclip = 1;
 	    break;
 
+	case 'z':
+	    params.noPG = 1;
+	    break;
+
 	case 'v':
 	    params.verbose++;
 	    break;
@@ -2183,6 +2191,30 @@ int main(int argc, char **argv) {
 	fprintf(stderr, "Failed to read file header\n");
 	return 1;
     }
+
+    if (!params.noPG) {
+	// Abuse the internal CRAM htslib header parser; to become public in due course.
+	SAM_hdr *sh = sam_hdr_parse_(header->text, header->l_text);
+	if (!sh)
+	    return 1;
+
+	char *arg_list = stringify_argv(argc, argv);
+
+	if (sam_hdr_add_PG(sh, "crumble",
+			   "VN", CRUMBLE_VERSION,
+			   arg_list ? "CL" : NULL,
+			   arg_list ? arg_list : NULL,
+			   NULL) != 0)
+	    return 1;
+
+	free(header->text);
+	if (!(header->text = strdup(sam_hdr_str(sh))))
+	    return 1;
+	header->l_text = sam_hdr_length(sh);
+	sam_hdr_free(sh);
+	free(arg_list);
+    }
+
     if (out && sam_hdr_write(out, header) != 0) {
 	fprintf(stderr, "Failed to write file header\n");
 	return 1;
