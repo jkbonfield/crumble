@@ -558,6 +558,9 @@ int calculate_consensus_pileup(int flags,
     // less confident.
 
     for (n = 0; n < np; n++) {
+	if (p[n].is_refskip)
+	    continue;
+
 	bam1_t *b = p[n].b;
 	uint8_t base = bam_seqi(bam_get_seq(b), p[n].qpos);
 	uint8_t qual = bam_get_qual(b)[p[n].qpos];
@@ -1022,7 +1025,9 @@ int flush_bam_list(pileup_cd *cd, cram_lossy_params *p, bam_sorted_list *bl,
 	}
     }
 
+    int m = 0;
     for (bi = RB_MIN(bam_sort, bl); bi; bi = next) {
+	m++;
 	next = RB_NEXT(bam_sort, bl, bi);
 	if (bi->end_pos >= before ||
 	    (bi->b->core.tid >= 0 && bi->b->core.tid >= before_tid))
@@ -1275,10 +1280,21 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 
     int64_t total_depth = 0, total_col = 0;
 
+    int last_flush_before = 0;
     while ((plp = bam_plp_auto(p_iter, &tid, &pos, &n_plp))) {
 	int i, preserve = 0, indel = 0;
 	unsigned char base;
 	int left_most = n_plp ? plp[0].b->core.pos : 0;
+
+	int m = 0;
+	for (i = 0; i < n_plp; i++)
+	    if (plp[i].is_refskip)
+		m++;
+
+	if (m == n_plp)
+	    continue;
+
+	//fprintf(stderr, "pos %d n_plp %d skip %d, added %d, removed %d\n", pos, n_plp, m, added, removed);
 
 	count_columns++;
 
@@ -1286,6 +1302,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	    // Ensure b_hist is only per chromosome
 	    if (flush_bam_list(&cd, p, b_hist, tid, INT_MAX, out, header) < 0)
 		return -1;
+	    last_flush_before = 0;
 	    last_tid = tid;
 	    min_pos = INT_MAX, max_pos = 0;
 	    min_pos2 = INT_MAX, max_pos2 = 0;
@@ -1475,6 +1492,9 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	indel_depth[0] = 0;
 	int clipped = 0, n_overlap = 0;
 	for (i = 0; i < n_plp; i++) {
+	    if (plp[i].is_refskip) // don't treat these as normal indels
+		continue;
+
 	    int is_indel = (plp[i].indel || plp[i].is_del);
 
 	    if ((plp[i].is_head && plp[i].qpos > 0) ||
@@ -1741,9 +1761,12 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	    insert_bam_list_id(b_hist, b2, id);
 	}
 
-	// Flush history (preserving sort order).
-	if (flush_bam_list(&cd, p, b_hist, INT_MAX, left_most, out, header) < 0)
+	// Flush history (preserving sort order), periodically only.
+	if (last_flush_before != left_most
+	    && flush_bam_list(&cd, p, b_hist, INT_MAX, left_most, out, header) < 0)
 	    return -1;
+
+	last_flush_before = left_most;
     }
 
     // Handle any in-flight reads that haven't yet finished as pileup
