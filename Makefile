@@ -26,8 +26,8 @@ clean:
 indel_only: indel_only.o
 	$(CC) -o $@ $< $(CFLAGS) $(LDFLAGS) $(LIBS)
 
-crumble: snp_score.o str_finder.o
-	$(CC) -o $@ snp_score.o str_finder.o $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) $(LIBS)
+crumble: snp_score.o str_finder.o bed.o
+	$(CC) -o $@ snp_score.o str_finder.o bed.o $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) $(LIBS)
 
 install: $(PROGS)
 	cp $(PROGS) $(PREFIX)/bin

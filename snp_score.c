@@ -154,6 +154,7 @@
 
 #include "str_finder.h"
 #include "tree.h"
+#include "bed.h"
 
 #ifndef MIN
 #define MIN(a,b) ((a)<(b)?(a):(b))
@@ -177,6 +178,9 @@ typedef struct {
     int    qlow, qcutoff, qhigh;
     int    min_mqual;
     char  *region;
+    char  *bed_fn;
+    bed_reg *bed;
+    int    nbed;
 
     // Standard gap5 algorithm
     int    min_qual_A;
@@ -1264,6 +1268,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
     bam_sorted_list *b_hist = bam_sorted_list_new();
     int str_snp = (p->sSTR_add || p->sSTR_mul);
     int counter = 0;
+    int bed_idx = 0;
 
     cd.fp = in;
     cd.header = header;
@@ -1285,6 +1290,30 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	int i, preserve = 0, indel = 0;
 	unsigned char base;
 	int left_most = n_plp ? plp[0].b->core.pos : 0;
+
+	// Preserve specified bed regions.
+	if (p->bed) {
+	    // Skip bed regions ending before tid/pos
+	    while (bed_idx < p->nbed && p->bed[bed_idx].tid < tid)
+		bed_idx++;
+
+	    while (bed_idx < p->nbed &&
+		   p->bed[bed_idx].tid == tid &&
+		   p->bed[bed_idx].end < pos)
+		bed_idx++;
+
+	    // If current bed region spans tid/pos, preserve verbatim.
+	    // We may also wish to skip the consensus code here, but it's
+	    // potentially plays a part in STR recognition overlapping
+	    // bed regions.
+	    if (bed_idx < p->nbed &&
+		p->bed[bed_idx].tid == tid &&
+		p->bed[bed_idx].start <= pos &&
+		p->bed[bed_idx].end > pos) {
+		preserve = 1;
+	    }
+	}
+
 
 	int m = 0;
 	for (i = 0; i < n_plp; i++)
@@ -1441,9 +1470,9 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 		count_discrep_B++;
 	}
 
-	preserve = ((p->min_qual_A && p->min_qual_B && hA != hB) ||
-		    (p->min_qual_A && sA < p->min_qual_A) ||
-		    (p->min_qual_B && sB < p->min_qual_B));
+	preserve |= ((p->min_qual_A && p->min_qual_B && hA != hB) ||
+		     (p->min_qual_A && sA < p->min_qual_A) ||
+		     (p->min_qual_B && sB < p->min_qual_B));
 	preserve |= ((p->min_qual_A && cons_g5_A.discrep >= p->min_discrep_A) ||
 		     (p->min_qual_B && cons_g5_B.discrep >= p->min_discrep_B));
 
@@ -1860,6 +1889,7 @@ void usage(FILE *fp) {
     fprintf(fp, "-i STR_mul,add    Adjust indel size by (STR_size+add)*mul [%.1f,%d]\n", I_STR_MUL, I_STR_ADD);
     fprintf(fp, "-s STR_mul,add    Adjust SNP size by (STR_size+add)*mul [%.1f,%d]\n", S_STR_MUL, S_STR_ADD);
     fprintf(fp, "-r region         Limit input to region chr:pos(-pos) []\n");
+    fprintf(fp, "-R keep.bed       Keep quality in regions contained in the supplied bed []\n");
     fprintf(fp, "-t tag_list       Comma separated list of aux tags to keep []\n");
     fprintf(fp, "-T tag_list       Comma separated list of aux tags to discard []\n");
     fprintf(fp, "-b out.bed        Output suspicious regions to out.bed []\n");
@@ -1954,6 +1984,7 @@ int main(int argc, char **argv) {
 	.BI_high       = 0,                 // -G
 	.softclip      = 0,                 // -S
 	.noPG          = 0,                 // -z
+	.bed           = NULL,              // -R
     };
 
     //  ........  ..  ....... . .
@@ -1961,7 +1992,7 @@ int main(int argc, char **argv) {
     //  ...... .  .. ... .. . . .
     // ABCDEFGHIJKLMNOPQRSTUVWXYZ
 
-    while ((opt = getopt(argc, argv, "I:O:q:d:x:Q:D:X:m:l:u:c:i:L:Bs:t:T:hr:b:vC:M:Z:P:V:p:e:f:g:E:F:G:S13579z")) != -1) {
+    while ((opt = getopt(argc, argv, "I:O:q:d:x:Q:D:X:m:l:u:c:i:L:Bs:t:T:hr:b:vC:M:Z:P:V:p:e:f:g:E:F:G:S13579zR:")) != -1) {
 	switch (opt) {
 	case 'I':
 	    hts_parse_format(&in_fmt, optarg);
@@ -2027,6 +2058,10 @@ int main(int argc, char **argv) {
 
 	case 'r':
 	    params.region = optarg;
+	    break;
+
+	case 'R':
+	    params.bed_fn = optarg;
 	    break;
 
 	case 't':
@@ -2215,6 +2250,14 @@ int main(int argc, char **argv) {
 	return 1;
     }
 
+    if (params.bed_fn) {
+	params.bed = bed_load(params.bed_fn, header, &params.nbed);
+	if (!params.bed) {
+	    fprintf(stderr, "Failed to process bed file\n");
+	    return 1;
+	}
+    }
+
     if (!params.noPG) {
 	// Abuse the internal CRAM htslib header parser; to become public in due course.
 	SAM_hdr *sh = sam_hdr_parse_(header->text, header->l_text);
@@ -2294,8 +2337,13 @@ int main(int argc, char **argv) {
 	fprintf(stderr, "count_over_depth = %"PRId64"\n", count_over_depth);
     }
 
+    // Output bed file of difficult regions
     if (params.bed_fp)
 	fclose(params.bed_fp);
+
+    // Input bed file of regions to preserve
+    if (params.bed)
+	bed_free(params.bed);
 
     return 0;
 }
