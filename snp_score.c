@@ -103,9 +103,9 @@
 #define MIN_DISCREP_A 2.0
 
 // With mqual adjustment; set MIN_QUAL_B to 0 to disable
-#define MIN_QUAL_B 75
-#define MIN_INDEL_B 150
-#define MIN_DISCREP_B 1.0
+#define MIN_QUAL_B 70
+#define MIN_INDEL_B 125
+#define MIN_DISCREP_B 1.5
 
 //#define MIN_QUAL_B 50
 //#define MIN_INDEL_B 100
@@ -113,11 +113,11 @@
 
 // Extra growth to expand indel qual region.
 // New region = old_region +/- (region_len*STR_MUL + STR_ADD)
-#define I_STR_MUL 1.0
 #define S_STR_MUL 0.0
-
-#define I_STR_ADD 2
 #define S_STR_ADD 0
+
+#define I_STR_MUL 1.0
+#define I_STR_ADD 2
 
 // Prevalence of low mapping quality, > PERC => store all
 // Lower => larger files
