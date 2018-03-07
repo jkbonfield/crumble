@@ -113,7 +113,7 @@
 
 // Extra growth to expand indel qual region.
 // New region = old_region +/- (region_len*STR_MUL + STR_ADD)
-#define I_STR_MUL 1.1
+#define I_STR_MUL 1.0
 #define S_STR_MUL 0.0
 
 #define I_STR_ADD 2
@@ -121,19 +121,21 @@
 
 // Prevalence of low mapping quality, > PERC => store all
 // Lower => larger files
-#define LOW_MQUAL_PERC 0.5
+#define LOW_MQUAL_PERC 1.0
 
 // Amount of variable sized insertion
-#define INS_LEN_PERC 0.1
+#define INS_LEN_PERC 1.0
 
 // Percentage of seqs with large soft-clips
 #define CLIP_PERC 0.2
 
 // Amount of over-depth to consider this as as suspect region
-#define OVER_DEPTH 3.0
+#define OVER_DEPTH 999.0
 
 // Percentage of reads spanning indel.
-#define INDEL_OVERLAP_PERC 0.5
+#define INDEL_OVERLAP_PERC 0.0
+
+#define PBLOCK 8
 
 #define BED_DIST 50
 
@@ -1917,12 +1919,14 @@ void usage(FILE *fp) {
     fprintf(fp, "-G qual_upper       If >= 'qual_cutoff' [0] replace by 'qual_upper' [0]\n");
     fprintf(fp, "-E qual_lower       otherwise replace by 'qual_lower' [0].\n");
     fprintf(fp, "\n(Standard compression levels combining the above.)\n");
-    fprintf(fp, "-1                Synonym for -s1.0,5 -i2.0,1 -m5\n");
-    fprintf(fp, "-3                Synonym for -s1.0,0\n");
-    fprintf(fp, "-5                Synonym for (defaults)\n");
-    fprintf(fp, "-7                Synonym for -P 999 -C 1 -M 1 -Z 1 -V 0\n");
-    fprintf(fp, "-9                Synonym for -Q70 -D125 -X1.5 -P 999 -C 1 -M 1 -Z 1 -V 0\n");
-    fprintf(fp, "\n");
+    fprintf(fp, "-1,-3,-5,-7,-8,-9 Combination of options for compression level.\n");
+    fprintf(fp, "Level -9 is the default level.  Options used per level are:\n");
+    fprintf(fp, "     -1: -p0 -Q75 -D150 -X1  - M0.5 -Z0.1 -V0.5 -P3.0 -s1.0,5 -i2.0,1 -m5\n");
+    fprintf(fp, "     -3: -p0 -Q75 -D150 -X1   -M0.5 -Z0.1 -V0.5 -P3.0 -s1.0,0 -i1.1,2 -m0\n");
+    fprintf(fp, "     -5: -p0 -Q75 -D150 -X1   -M0.5 -Z0.1 -V0.5 -P3.0 -s0.0,0 -i1.1,2 -m0\n");
+    fprintf(fp, "     -7: -p0 -Q75 -D150 -X1   -M1   -Z1   -V0   -P999 -s0.0,0 -i1.1,2 -m0\n");
+    fprintf(fp, "     -8: -p0 -Q70 -D125 -X1.5 -M1   -Z1   -V0   -P999 -s0.0,0 -i1.0,2 -m0\n");
+    fprintf(fp, "     -9: -p8 -Q70 -D125 -X1.5 -M1   -Z1   -V0   -P999 -s0.0,0 -i1.0,2 -m0\n\n");
     fprintf(fp,
 "Standard htslib format options apply.  So to create a CRAM file with lossy\n\
 template names enabled and a larger number of sequences per slice, try:\n\
@@ -1975,7 +1979,7 @@ int main(int argc, char **argv) {
 	.over_depth    = OVER_DEPTH,        // -P
 	.indel_ov_perc = INDEL_OVERLAP_PERC,// -V
 	.verbose       = 0,                 // -v
-	.pblock        = 0,                 // -p
+	.pblock        = PBLOCK,            // -p
 	.BD_low        = 0,                 // -e
 	.BD_mid        = 0,                 // -f
 	.BD_high       = 0,                 // -g
@@ -1992,7 +1996,7 @@ int main(int argc, char **argv) {
     //  ...... .  .. ... .. . . .
     // ABCDEFGHIJKLMNOPQRSTUVWXYZ
 
-    while ((opt = getopt(argc, argv, "I:O:q:d:x:Q:D:X:m:l:u:c:i:L:Bs:t:T:hr:b:vC:M:Z:P:V:p:e:f:g:E:F:G:S13579zR:")) != -1) {
+    while ((opt = getopt(argc, argv, "I:O:q:d:x:Q:D:X:m:l:u:c:i:L:Bs:t:T:hr:b:vC:M:Z:P:V:p:e:f:g:E:F:G:S135789zR:")) != -1) {
 	switch (opt) {
 	case 'I':
 	    hts_parse_format(&in_fmt, optarg);
@@ -2135,38 +2139,106 @@ int main(int argc, char **argv) {
 
 	case '9':
 	    // Most aggressive compression
-	    params.min_qual_B = 70;
-	    params.min_indel_B = 125;
-	    params.min_discrep_B = 1.5;
-	    params.low_mqual_perc = 1.0;
-	    params.ins_len_perc = 1.0;
-	    params.indel_ov_perc = 0;
-	    params.over_depth = 999;
-	    params.iSTR_mul = 1.0;
+	    // -p8 -Q70 -D125 -X1.5 -M1 -Z1 -V0 -P999 -s0.0,0 -i1.0,2 -m0
+	    params.pblock = 8;		    // -p
+	    params.min_qual_B = 70;	    // -Q
+	    params.min_indel_B = 125;	    // -D
+	    params.min_discrep_B = 1.5;	    // -X
+	    params.low_mqual_perc = 1.0;    // -M
+	    params.ins_len_perc = 1.0;	    // -Z
+	    params.indel_ov_perc = 0.0;	    // -V
+	    params.over_depth = 999.0;	    // -P
+	    params.sSTR_mul = 0.0;	    // -s
+	    params.sSTR_add = 0;	    // -s
+	    params.iSTR_mul = 1.0;	    // -i
+	    params.iSTR_add = 2;	    // -i
+	    params.min_mqual = 0;	    // -m
+	    break;
+
+	case '8':
+	    // -p0 -Q70 -D125 -X1.5 -M1 -Z1 -V0 -P999 -s0.0,0 -i1.0,2 -m0
+	    params.pblock = 0;		    // -p *
+	    params.min_qual_B = 70;	    // -Q
+	    params.min_indel_B = 125;	    // -D
+	    params.min_discrep_B = 1.5;	    // -X
+	    params.low_mqual_perc = 1.0;    // -M
+	    params.ins_len_perc = 1.0;	    // -Z
+	    params.indel_ov_perc = 0.0;	    // -V
+	    params.over_depth = 999.0;	    // -P
+	    params.sSTR_mul = 0.0;	    // -s
+	    params.sSTR_add = 0;	    // -s
+	    params.iSTR_mul = 1.0;	    // -i
+	    params.iSTR_add = 2;	    // -i
+	    params.min_mqual = 0;	    // -m
 	    break;
 
 	case '7':
-	    params.low_mqual_perc = 1.0;
-	    params.ins_len_perc = 1.0;
-	    params.indel_ov_perc = 0;
-	    params.over_depth = 999;
+	    // -p0 -Q75 -D150 -X1 -M1 -Z1 -V0 -P999 -s0.0,0 -i1.1,2 -m0
+	    params.pblock = 0;		    // -p .
+	    params.min_qual_B = 75;	    // -Q *
+	    params.min_indel_B = 150;	    // -D *
+	    params.min_discrep_B = 1.0;	    // -X *
+	    params.low_mqual_perc = 1.0;    // -M
+	    params.ins_len_perc = 1.0;	    // -Z
+	    params.indel_ov_perc = 0.0;	    // -V
+	    params.over_depth = 999.0;	    // -P
+	    params.sSTR_mul = 0.0;	    // -s
+	    params.sSTR_add = 0;	    // -s
+	    params.iSTR_mul = 1.1;	    // -i *
+	    params.iSTR_add = 2;	    // -i
+	    params.min_mqual = 0;	    // -m
 	    break;
 
 	case '5':
+	    // -p0 -Q75 -D150 -X1 -M0.5 -Z0.1 -V0.5 -P3.0 -s0.0,0 -i1.1,2 -m0
+	    params.pblock = 0;		    // -p .
+	    params.min_qual_B = 75;	    // -Q .
+	    params.min_indel_B = 150;	    // -D .
+	    params.min_discrep_B = 1.0;	    // -X .
+	    params.low_mqual_perc = 0.5;    // -M *
+	    params.ins_len_perc = 0.1;	    // -Z *
+	    params.indel_ov_perc = 0.5;	    // -V *
+	    params.over_depth = 3.0;	    // -P *
+	    params.sSTR_mul = 0.0;	    // -s
+	    params.min_mqual = 0;	    // -m
+	    params.sSTR_add = 0;	    // -s
+	    params.iSTR_mul = 1.1;	    // -i
+	    params.iSTR_add = 2;	    // -i
 	    break;
 
 	case '3':
-	    params.sSTR_mul = 1.0;
-	    params.sSTR_add = 0;
+	    // -p0 -Q75 -D150 -X1 -M0.5 -Z0.1 -V0.5 -P3.0 -s1.0,0 -i1.1,2 -m0
+	    params.pblock = 0;		    // -p .
+	    params.min_qual_B = 75;	    // -Q .
+	    params.min_indel_B = 150;	    // -D .
+	    params.min_discrep_B = 1.0;	    // -X .
+	    params.low_mqual_perc = 0.5;    // -M .
+	    params.ins_len_perc = 0.1;	    // -Z .
+	    params.indel_ov_perc = 0.5;	    // -V .
+	    params.over_depth = 3.0;	    // -P .
+	    params.sSTR_mul = 1.0;	    // -s *
+	    params.sSTR_add = 0;	    // -s
+	    params.iSTR_mul = 1.1;	    // -i
+	    params.iSTR_add = 2;	    // -i
+	    params.min_mqual = 0;	    // -m
 	    break;
 
 	case '1':
 	    // Most conservative compression
-	    params.sSTR_mul = 1.0;
-	    params.sSTR_add = 5;
-	    params.iSTR_mul = 2.0;
-	    params.iSTR_add = 1;
-	    params.min_mqual = 5;
+	    // -p0 -Q75 -D150 -X1 -M0.5 -Z0.1 -V0.5 -P3.0 -s1.0,5 -i2.0,1 -m5
+	    params.pblock = 0;		    // -p .
+	    params.min_qual_B = 75;	    // -Q .
+	    params.min_indel_B = 150;	    // -D .
+	    params.min_discrep_B = 1.0;	    // -X .
+	    params.low_mqual_perc = 0.5;    // -M .
+	    params.ins_len_perc = 0.1;	    // -Z .
+	    params.indel_ov_perc = 0.5;	    // -V .
+	    params.over_depth = 3.0;	    // -P .
+	    params.sSTR_mul = 1.0;	    // -s .
+	    params.sSTR_add = 5;	    // -s *
+	    params.iSTR_mul = 2.0;	    // -i *
+	    params.iSTR_add = 1;	    // -i *
+	    params.min_mqual = 5;	    // -m *
 	    break;
 
 	case 'S':
@@ -2220,6 +2292,11 @@ int main(int argc, char **argv) {
 	} else {
 	    printf("Calls with mqual: disabled.\n");
 	}
+	fprintf(stderr, "Low mqual perc   = %f\n", params.low_mqual_perc);
+	fprintf(stderr, "Ins length perc  = %f\n", params.ins_len_perc);
+	fprintf(stderr, "indel ov perc    = %f\n", params.indel_ov_perc);
+	fprintf(stderr, "overdepth factor = %f\n", params.over_depth);
+	fprintf(stderr, "P-block level    = %d\n", params.pblock);
     }
 
     init_bins(&params);
@@ -2321,6 +2398,7 @@ int main(int argc, char **argv) {
 	kh_destroy(aux_exists, params.aux_blacklist);
 
     if (params.verbose) {
+	fprintf(stderr, "\n\n: Counts of positions preserved by option\n");
 	fprintf(stderr, "A/B Diff         = %d\n", count_diff);
 	fprintf(stderr, "A/B Indel        = %d / %d\n", count_indel_qual, count_indel); 
 	fprintf(stderr, "A:  Het          = %d / %d\n", count_het_qual_A, count_het_A);
