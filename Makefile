@@ -30,4 +30,7 @@ crumble: snp_score.o str_finder.o bed.o
 	$(CC) -o $@ snp_score.o str_finder.o bed.o $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) $(LIBS)
 
 install: $(PROGS)
+	-mkdir -p $(PREFIX)/bin
 	cp $(PROGS) $(PREFIX)/bin
+	-mkdir -p $(PREFIX)/share/man/man1
+	cp crumble.1 $(PREFIX)/share/man/man1

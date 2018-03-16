@@ -1,0 +1,541 @@
+.TH crumble 1 "14 March 2018" "crumble-0.8" "Bioinformatics tools"
+.SH NAME
+.PP
+crumble \- Lossy compression of DNA sequence quality values
+
+.SH SYNOPSIS
+.PP
+\fBcrumble\fR [\fIoptions\fR] [\fIinput_file\fR [\fIoutput_file\fR]]
+
+.SH DESCRIPTION
+.PP
+\fBCrumble\fR reads an aligned SAM, BAM or CRAM file, performs lossy
+compression of the quality values based on the consistency of the
+multiple alignment, and writes a modified SAM, BAM or CRAM file.
+Reading and writing can be to stdin and stdout, either by omitting the
+field or specifying the filename as "\fB-\fR".
+.PP
+The method of quality compression stems from observations of how
+quality values affect variant calling algorithms.  If we run a variant
+caller on a file with and without quality values and get the same
+result with comparable confidence both times, then we conclude the
+quality values were not important and can be discarded.
+.PP
+We do not wish to know the internals of each possible variant caller,
+so instead use a deliberately simplistic but pessimistic consensus
+algorithm, capable of calling homozygous and heterozygous calls for a
+single diploid sample with an associated consensus confidence.  It
+does this without the use of a reference sequence, using solely the
+data within the aligned BAM.  If we are unsure of the accuracy of our
+consensus call then we keep the qualities intact or apply only a light
+smoothing filter, otherwise we adjust the qualities to fixed values to
+reduce the overall variability, and thus entropy, increasing
+compression ratios.
+.PP
+\fBCrumble\fR can compute the consensus with and/or without using
+mapping quality.  By default it only computes it once (with), but if
+both consensus methods are requested then each will have its own set
+of thresholds to use in validation.  The minimum quality threshold
+(\fB-q\fR and \fB-Q\fR) needs to be above zero in order for that
+consensus method to be used.
+.PP
+\fBCrumble\fR uses the consensus confidence plus heuristics listed
+below to classify positions into good and bad.  A good region will
+have the qualities modified; bases in that column that agree with the
+homozygous or heterozygous consensus call will have their quality
+values increased to a fixed value (specified by \fB-u\fR), while bases
+that disagree with have their values either decreased (specified by
+\fB-l\fR) or heavily quantised (\fB-l\fR, \fB-c\fR and \fB-u\fR).  In
+all other regions, \fBcrumble\fR either keeps the quality values
+intact or performs a simple smoothing (using the CSAM P-block
+algorithm with level indicated by \fB-p\fR).
+.PP
+A series of heuristics are employed to further filter high confidence
+consensus bases in case of systematic problems, to prevent seemingly
+confident but incorrect consensus calls leading to inappropriate
+quality loss.  The possible heuristics that are applied depend on the
+compression level used.  Some are per column, such as consensus
+confidence, while others are per read.  In the latter case, if we
+determine the whole read is potentially misplaced / misaligned then we
+preserve qualities for the entire read and not just the column being
+studied.
+
+.TP 4
+.B Per base: SNP / Indel confidence
+This is the starting point for deciding whether to keep a quality.  An
+indel in this situation is considered to be any column where at least
+one base is either absent or inserted with respect to the reference
+coordinate system.
+
+If the consensus confidence is below the minimum specified
+confidence for a SNP (\fB-Q\fR and/or \fB-q\fR depending on whether
+the consensus algorithm is using mapping quality) or an indel (\fB-D\fR
+or \fB-d\fR) it will be retained.
+
+.TP 4
+.B Per base: consensus discrepancy
+The consensus will make either a homozygous or heterozygous call, but
+there may be bases present that disagree.  By computing a new consensus
+solely from these discrepant bases and comparing this to the original
+call we get a discrepancy factor.  High discrepancy (above 1) may be
+indicative of misaligned data.  Specified using the \fB-X\fR and
+\fB-x\fR parameters.
+
+.TP 4
+.B Per base: 'keep' bed file
+Any base which overlaps the regions specified in the bed file
+(\fB-b\fR) will be retained verbatim.
+
+.TP 4
+.B Per base: proximity to SNP / Indel
+A short tandem repeat (STR) with indels will often lead to misaligned
+bases.  A variant caller may employ a local reassembly method to tidy
+up alignments in such regions, but this has the effect of moving bases
+between columns which in turn may invalidate our calculations of which
+columns are high confidence.  We can compensate for this by preserve
+qualities spanning the entire STR plus a little bit more either side,
+either as a proportion of the STR length or a fixed number of base pairs.
+
+For any location where \fBCrumble\fR wants to preserve base
+confidences using the above rules, it checks whether this base forms
+part of an STR and if so computes the start and end of this STR.  It
+then expands the region to preserve qualities using \fBnew_start = pos - (pos -
+start) * STR_mul - STR_add\fR and \fBnew_end = pos + (end - pos) * STR_mul +
+STR_add\fR where \fIpos\fR is the current location.
+We have SNP and Indel specific versions of these multiply and addition
+parameters, specified using \fB\s\fR and \fB-i\fR.  These are specified
+as the multiplier and additive values separated with a comma.  For
+example \fB-i1.5,1\fR will make preserve qualities for 50% larger plus
+1 extra bp on either side of the STR.
+
+.TP 4
+.B Per read: excessive depth
+Regions of collapsed repeats or large insertions being aligned to the
+next best reference match lead to high depth.  Typically such
+locations can yield overly confident heterozygous variant calls.
+The average depth is predominantly from the previous Mb of consensus.
+A column with depth more than \fB-P\fR \fIdepth\fR times the average
+will have mean all qualities for reads overlapping that quality will
+be retained, not just in that column alone.
+
+.TP 4
+.B Per read: high proportion of low mapping quality
+Regions where most of the reads have low mapping quality are either
+repeat copies or, potentially, incorrect reference.  An updated
+reference may move these reads and we may not wish to pre-judge
+whether their quality values will be necessary after remapping.
+Controlled by the \fB-M\fR option, which should be a fraction between
+0.0 (keep qualities if any low mapping quality data is present) and
+1.0 (do not use this rule).
+
+Note that all reads in regions matching this rule will be have their
+qualities preserved, not just the low mapping quality ones.
+
+.TP 4
+.B Per read: high proportion of soft-clipping
+Many reads having soft-clipped portions of their CIGAR strings is
+indicative of either a missing insertion or a collapsed repeat.
+Relying on the validity of the consensus call and confidence in this
+case can be wrong.   The \fB-C\fR option specifies the fraction of
+reads present in order to retain quality values, with 1.0 disabling
+this rule.
+
+.TP 4
+.B Per read: variability in indel size
+Given we are targeting a diploid single sample file, the length of
+indels should be at most bi-modal in distribution.  We find the two
+most frequent lengths of indel and count the proportion of other
+lengths over all reads spanning the indel at this region.  If it is
+too high (above the fraction in \fB-Z\fR option), then there may be
+additional alignment problems causing bases to be in incorrect
+columns.
+
+.TP 4
+.B Per read: low proportion of reads spanning indel
+A pairwise alignment naturally leads to some reads ending within an
+indel, which in turn leads to the number of reads spanning the indel
+being slightly lower than the number of reads flanking it.  However
+too large a drop is sometimes indicative of a large structural
+variation or a misalignment.  We keep qualities if the fraction of
+reads overlapping the indel is lower than the amount specified by
+\fB-V\fR, with zero disabling this filter.
+
+
+.SH OPTIONS
+.PP
+.TP
+\fB-1\fR
+Short hand for \fB-p0 -Q75 -D150 -X1  -M0.5 -Z0.1 -V0.5 -P3.0 -s1.0,5
+-i2.0,1 -m5\fR.
+
+.PP
+.TP
+\fB-3\fR
+Short hand for \fB-p0 -Q75 -D150 -X1   -M0.5 -Z0.1 -V0.5 -P3.0 -s1.0,0
+-i1.1,2 -m0\fR.
+
+.PP
+.TP
+\fB-5\fR
+Short hand for \fB-p0 -Q75 -D150 -X1   -M0.5 -Z0.1 -V0.5 -P3.0 -s0.0,0
+-i1.1,2 -m0\fR.
+
+.PP
+.TP
+\fB-7\fR
+Short hand for \fB-p0 -Q75 -D150 -X1   -M1   -Z1   -V0   -P999 -s0.0,0
+-i1.1,2 -m0\fR.
+
+.PP
+.TP
+\fB-8\fR
+Short hand for \fB-p0 -Q70 -D125 -X1.5 -M1   -Z1   -V0   -P999 -s0.0,0
+-i1.0,2 -m0\fR.
+
+.PP
+.TP
+\fB-9\fR
+Short hand for \fB-p8 -Q70 -D125 -X1.5 -M1   -Z1   -V0   -P999 -s0.0,0
+-i1.0,2 -m0\fR.
+
+.PP
+.TP
+\fB-b\fR \fIout.bed\fR
+Writes out a bed file containing regions that trigger the various
+heuristics that \fBcrumble\fI uses to preserve quality values.
+
+.PP
+.TP
+\fB-B\fR
+Enables binary quality mode.  If the \fB-L 1\fR option (enabled by
+default) is used to reduce mismatching qualities, bases in good
+regions that disagree with the called consensus will be modified.
+Without the binary quality mode these will be set to a constant low
+value, specified by the \fB-l\fR parameter.  With binary quality mode,
+these are instead quantised to two values; low and high as governed by
+the \fB-l\fR, \fB-u\fR and \fB-c\fR parameters.
+
+.PP
+.TP
+\fB-C\fR \fIfloat\fR
+Keep all qualities for reads at this site if >= \fIfloat\fR proportion
+of reads have soft-clipping.
+
+.PP
+.TP
+\fB-c\fR \fIqual_cutoff\fR
+.TQ
+\fB-l\fR \fIqual_lower\fR
+.TQ
+\fB-u\fR \fIqual_upper\fR
+In highly confident regions, quality are quantised into those \fI>=
+qual_cutoff\fR  and those \fI< qual_cutoff\fR, being replaced by
+\fIqual_upper\fR and \fIqual_lower\fR respectively.
+
+.PP
+.TP
+\fB-d\fR \fIqual\fR
+Keep quality for bases at this position if the consensus indel
+confidence when computed without mapping quality is < \fIqual\fR.
+
+.PP
+.TP
+\fB-D\fR \fIqual\fR
+Keep quality for bases at this position if the consensus indel
+confidence when computed using mapping quality is < \fIqual\fR.
+
+.PP
+.TP
+\fB-e\fR \fIBD_low\fR
+See \fB-f\fR for more details.
+
+.PP
+.TP
+\fB-E\fR \fIBI_low\fR
+See \fB-F\fR for more details.
+
+.PP
+.TP
+\fB-f\fR \fIBD_cutoff\fR
+If set, BD:Z tags will be binary quantised into values >=
+\fIBD_cutoff\fR and values < \fIBD_cutoff\fR, replacing these with
+\fIBD_low\fR and \fIBD_high\fR values specified using the \fB-e\fR and
+\fB-g\fR options respectively
+
+.PP
+.TP
+\fB-F\fR \fIBI_cutoff\fR
+If set, BI:Z tags will be binary quantised into values >=
+\fIBI_cutoff\fR and values < \fIBI_cutoff\fR, replacing these with
+\fIBI_low\fR and \fIBI_high\fR values specified using the \fB-E\fR and
+\fB-G\fR options respectively
+
+.PP
+.TP
+\fB-g\fR \fIBD_high\fR
+See \fB-f\fR for more details.
+
+.PP
+.TP
+\fB-G\fR \fIBI_high\fR
+See \fB-F\fR for more details.
+
+.PP
+.TP
+\fB-i\fR \fIi_mul,i_add\fR
+Sets the multiplier and additive values when expanding the size of
+short tandem repeats containing an indel.
+
+.PP
+.TP
+\fB-I\fR \fIfmt[,opt...]\fR
+Specifies the input format, with any format specific options specified
+as key=value pairs.  See the samtools man page for a description of
+these format options.
+
+.PP
+.TP
+\fB-l\fR \fIqual_lower\fR
+See \fB-c\fR for a description.
+
+.PP
+.TP
+\fB-L\fR \fIbool\fR
+If \fIbool\fR is 1 (the default), quality values for bases overlapping
+high confidence consensus locations that do not match the consensus
+call will have their qualities adjusted.  These will either be
+quantised to \fIqual_lower\fR or \fIqual_upper\fR if binary
+quantisation is enabled (see \fB-B\fR) or set to \fIqual_lower\fR if
+no quantisation is happening.  Also see \fB-l\fR, \fB-c\fR and
+\fB-u\fR options.
+
+.PP
+.TP
+\fB-m\fR \fImqual\fR
+Keeps all quality values for reads with mapping quality < \fImqual\fR.
+
+.PP
+.TP
+\fB-M\fR \fIfloat\fR
+Keep all qualities for reads at this site if >= \fIfloat\fR proportion
+of indel sizes do not fit a bi-modal distribution.
+
+.PP
+.TP
+\fB-O\fR \fIfmt[,opt...]\fR
+Specifies the output format, with any format specific options specified
+as key=value pairs.  See the samtools man page for a description of
+these format options.
+
+.PP
+.TP
+\fB-p\fR \fIspan\fR
+Applies the P-block algorithm from libCSAM.  For qualities that we
+wish to keep, we still have the option of reducing their fidelity
+using a smoothing algorithm.  For each run of quality values that have
+a minimum to maximum range <= \fIspan\fR we replace them with the
+midpoint of that span.  Use \fB-p 0\fR to disable this feature.
+
+.PP
+.TP
+\fB-P\fR \fIfloat\fR
+Keeps qualities if the depth locally is \fIfloat\fR times higher than
+average.
+
+.PP
+.TP
+\fB-q\fR \fIqual\fR
+Keep quality for bases at this position if the consensus SNP
+confidence when computed without mapping quality is < \fIqual\fR.
+
+.PP
+.TP
+\fB-Q\fR \fIqual\fR
+Keep quality for bases at this position if the consensus SNP
+confidence when computed using mapping quality is < \fIqual\fR.
+
+.PP
+.TP
+\fB-r\fR \fIregion\fR
+Runs crumble only on a specific region specified in chr, chr:start or
+chr:start-end syntax.  Note the output will only cover this region.
+If you wish run crumble on an entire file but restrict which regions
+are (not) modified, use the \fB-R\fR option instead.
+
+.PP
+.TP
+\fB-R\fR \fIexclude.bed\fR
+Keeps qualities for bases overlapping regions specified in
+\fIexclude.bed\fR.
+
+.PP
+.TP
+\fB-s\fR \fIs_mul,s_add\fR
+Sets the multiplier and additive values when expanding the size of
+short tandem repeats containing a SNP.
+
+.PP
+.TP
+\fB-S\fR
+Also quantises qualities in soft-clipped bases, using the parameters
+specified via \fB-l\fR, \fB-c\fR and \fB-u\fR.
+
+.PP
+.TP
+\fB-t\fR \fItag[,tag...]\fR
+Specifies a comma separated list of tags to keep. All others are
+discarded.
+
+.PP
+.TP
+\fB-T\fR \fItag[,tag...]\fR
+Specifies a comma separated list of tags to discard.  If both \fB-t\fR
+and \fB-T\fR are specified, the whitelist is applied first followed by
+the blacklist.
+
+.PP
+.TP
+\fB-u\fR \fIqual_upper\fR
+See \fB-c\fR for a description.
+
+.PP
+.TP
+\fB-V\fR \fIfloat\fR
+Keep all qualities for reads at this site if < \fIfloat\fR proportion
+of reads span an indel.
+
+.PP
+.TP
+\fB-v\fR
+Increases verbosity of output.  Can be specified more than once.
+
+.PP
+.TP
+\fB-x\fR \fIqual\fR
+Keep quality for bases at this position if the consensus discrepancy, computed without mapping quality, is >= \fIqual\fR.
+
+.PP
+.TP
+\fB-X\fR \fIqual\fR
+Keep quality for bases at this position if the consensus discrepancy, computed using mapping quality, is >= \fIqual\fR.
+
+.PP
+.TP
+\fB-Z\fR \fIfloat\fR
+Keep all qualities for reads at this site if >= \fIfloat\fR proportion
+of reads have soft-clipping.
+
+.PP
+.TP
+\fB-z\fR
+Do not add an @PG SAM header line.
+
+.SH EXAMPLES
+.PP
+Using crumble to convert BAM to CRAM with lossy read-names and
+dropping the OQ,BD and BI auxiliary tags.
+.PP
+.EX
+crumble -O cram,lossy_names -T OQ,BD,BI in.bam out.cram
+.EE
+
+An example mpileup alignment of a short tandem repeat before and after
+running crumble with -i1.0,2.
+
+.EX
+samtools mpileup -Q0 -B -r 1:1488390-1488424 CHM1_CHM13_2.15x.chr1.cram
+1       1488390 N       11      g$gCGggGGgGG    =<#?=7>>#,.
+1       1488391 N       10      aAAaaAAaAA      >#?<.==#?1
+1       1488392 N       11      cCCccCCcCC^IC   >#<>2==#<<;
+1       1488393 N       12      tTTttTTtTTT^]T  ?#0.+??#@?>=
+1       1488394 N       12      gAGggGGgGGGG    <#75'>>#><>9
+1       1488395 N       12      tGTttTTtTTTT    ?#.8=>>#>9?=
+1       1488396 N       12      cCCccCCcCCCC    <#><8==#==>=
+1       1488397 N       12      tTTtt-1nTTtTTTT @#07(??#9>2@
+1       1488398 N       12      c$CCc-1n*C-1NC+1AaCC-1NCC-1N    >#::2==#==>?
+1       1488399 N       11      AA*a*AaA*A*     #>=2>>>>==>
+1       1488400 N       11      AAaaAAaAAAA     #@==>>?===>
+1       1488401 N       11      AAaaAAaAAAA     #>==>>>=;=>
+1       1488402 N       11      A$AaaAAaAAAA    #7==>>7===>
+1       1488403 N       10      AaaAAaAAAA      <==>>;>>=>
+1       1488404 N       10      AaaAAaAAAA      @==>>?>===
+1       1488405 N       10      AaaAAaAAAA      @>=>>>>.=>
+1       1488406 N       10      AaaAAaAAAA      @==>>?>>==
+1       1488407 N       10      AaaAAaAAAA      ===?>>>===
+1       1488408 N       10      AaaAAaAAAA      -==?>==>==
+1       1488409 N       10      AaaAAaAAAA      >==?>?>>==
+1       1488410 N       10      AaaAAaAAAA      8==?>:>===
+1       1488411 N       10      AaaAAaAAAA      8==?>-====
+1       1488412 N       10      AaaAAaAAAA      8==?>?;===
+1       1488413 N       10      AaaAAaAAAA      ;==?>?4===
+1       1488414 N       10      A$aaAAaAAAA     ?==?>=><==
+1       1488415 N       9       aaAAaAAAA       >=?><>===
+1       1488416 N       9       aaAAaAAAA       >=??6>>==
+1       1488417 N       9       aaAAaAAAA       >=?>=><:=
+1       1488418 N       9       aaAAaAAAA       >=??>>===
+1       1488419 N       10      aaAAaA$AAA^]a   >=??>4=:=?
+1       1488420 N       9       ttTTtTT$Tt      >=>?;=>89
+1       1488421 N       8       ttTTtTTt        @>>.95=;
+1       1488422 N       8       aaAAaAAa        @=@,:;=;
+1       1488423 N       8       ccCCcCCc        ?=>&?:=?
+1       1488424 N       8       ttTTtTTt        >=@;>=>?
+
+crumble -9p8 -l5 -u40 -i1.0,2 CHM1_CHM13_2.15x.chr1.cram crumble.cram
+
+samtools mpileup -Q0 -B -r 1:1488390-1488424 crumble.cram
+1       1488390 N       11      g$gCGggGGgGG    II&IIIIIIII
+1       1488391 N       10      aAAaaAAaAA      IIIIIIIIII
+1       1488392 N       11      cCCccCCcCC^IC   IIIIIIIIIII
+1       1488393 N       12      tTTttTTtTTT^]T  >#66)>>#:<8<
+1       1488394 N       12      gAGggGGgGGGG    >#66)>>#:<8<
+1       1488395 N       12      tGTttTTtTTTT    >#66:>>#:<8<
+1       1488396 N       12      cCCccCCcCCCC    >#66:>>#:<8<
+1       1488397 N       12      tTTtt-1nTTtTTTT >#66->>#:<8<
+1       1488398 N       12      c$CCc-1n*C-1NC+1AaCC-1NCC-1N    >#66->>#:<8<
+1       1488399 N       11      AA*a*AaA*A*     #66->>;:<8<
+1       1488400 N       11      AAaaAAaAAAA     #;6=>>;:<8<
+1       1488401 N       11      AAaaAAaAAAA     #;6=>>;:<8<
+1       1488402 N       11      A$AaaAAaAAAA    #;6=>>;:<8<
+1       1488403 N       10      AaaAAaAAAA      ;6=>>;:<8<
+1       1488404 N       10      AaaAAaAAAA      ;6=>>;:<8<
+1       1488405 N       10      AaaAAaAAAA      ;6=>>;:68<
+1       1488406 N       10      AaaAAaAAAA      ;6=>>;:68<
+1       1488407 N       10      AaaAAaAAAA      ;6=>>;:68<
+1       1488408 N       10      AaaAAaAAAA      -6=>>;:68<
+1       1488409 N       10      AaaAAaAAAA      ;6=>>;:68<
+1       1488410 N       10      AaaAAaAAAA      ;6=>>;:68<
+1       1488411 N       10      AaaAAaAAAA      ;6=>>-:68<
+1       1488412 N       10      AaaAAaAAAA      ;6=>>::68<
+1       1488413 N       10      AaaAAaAAAA      ;6=>>::68<
+1       1488414 N       10      A$aaAAaAAAA     ;6=>>::68<
+1       1488415 N       9       aaAAaAAAA       6=>>::68<
+1       1488416 N       9       aaAAaAAAA       6=>>::68<
+1       1488417 N       9       aaAAaAAAA       6=>>::68<
+1       1488418 N       9       aaAAaAAAA       6=>>::68<
+1       1488419 N       10      aaAAaA$AAA^]a   6=>>::68<<
+1       1488420 N       9       ttTTtTT$Tt      6=>>:68<<
+1       1488421 N       8       ttTTtTTt        @=>.:6<<
+1       1488422 N       8       aaAAaAAa        IIIIIIII
+1       1488423 N       8       ccCCcCCc        IIIIIIII
+1       1488424 N       8       ttTTtTTt        IIIIIIII
+
+The heterozygous deletion at 1488399 is neighboured by TCTC STR to the
+left and poly-A to the right, extended by an additional 2bp either
+side.  Qualities outside this region are replaced with Q40 while
+qualities inside are smoothed linearly along each read.
+.EE
+
+.SH LIMITATIONS
+.PP
+\fBCrumble\fR is designed to operate on files containing a single
+sample with a diploid genome of approximately equal allelic frequency.
+It is not appropriate for use on somatic data.
+
+.SH AUTHOR
+.PP
+The original idea came from discussions between James Bonfield, Shane
+McCarthy and Richard Durbin while at the Sanger Institute.  James
+Bonfield wrote the implementation.
+
+.SH SEE ALSO
+.IR samtools (1)
