@@ -1049,8 +1049,9 @@ int flush_bam_list(pileup_cd *cd, cram_lossy_params *p, bam_sorted_list *bl,
 		qual[x] &= ~0x80;
 	}
 	cd->count_out++;
-	if (p->pblock)
+	if (p->pblock && !(bi->b->core.flag & (1<<15)))
 	    pblock(bi->b, p->pblock);
+	bi->b->core.flag &= ~(1<<15);
 	if (sam_write1(out, header, bi->b) < 0)
 	    return -1;
 	bam_destroy1(bi->b);
@@ -1312,7 +1313,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 		p->bed[bed_idx].tid == tid &&
 		p->bed[bed_idx].start <= pos &&
 		p->bed[bed_idx].end > pos) {
-		preserve = 1;
+		preserve = 2; // *really* preserve; disallow PBlock
 	    }
 	}
 
@@ -1708,6 +1709,10 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 
 	    if (preserve)
 		*qual |= 0x80;
+
+	    if (preserve>1)
+		// Hacky location to use as our own flag.
+		b2->core.flag |= (1<<15);
 
 	    if (!keep_qual && p->softclip) {
 		if (plp[i].is_head) {
