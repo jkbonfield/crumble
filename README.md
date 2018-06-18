@@ -5,16 +5,7 @@ This directory contains some experimental tools that read a SAM/BAM/CRAM file,
 compute which confidence values to keep and which to omit, and emit a new file
 with most qualities removed.
 
-It depends on a pre-compiled htslib.  Preferably this will be against
-an installed copy, in which case you need to specify where to find it
-via e.g.:
-
-    make CPPFLAGS="-I/usr/local/htslib/include" LDFLAGS="-L/usr/local/htslib/lib"
-
-As a simpler alternative, it will default to using a sibling ../htslib
-source tree, but this still needs compiling first.  In this scenario,
-on non-linux platforms you may also need to set LD_LIBRARY_PATH,
-DYLD_LIBRARY_PATH or PATH environment variables to find the libhts library.
+See INSTALL for compilation and installation instructions.
 
 **Crumble** uses a simple heterozygous consensus algorithm (taken from
 _gap5_) in a couple of modes to produce a consensus call with a

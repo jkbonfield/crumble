@@ -1,0 +1,31 @@
+Crumble uses automake and autoconf.
+
+If you have a cloned git repository, run "autoreconf -i" first to
+install the necessary files and create the configure script.  This is
+not necessary if you downloaded a release tar-ball.
+
+To compile, typically run
+
+    ./configure  [options]
+    make
+
+Use "./configure --help" to list the configure options available.
+
+Crumble depends on a pre-compiled htslib.  Preferably this will be
+against an installed copy, but it will also work with a sibling
+../htslib source tree (which still needs compiling first).
+
+If you have htslib installed in a non-standard location, specify where via
+
+    ./configure --with-htslib=DIR
+
+Note this will not automatically set rpath for you, so you may need to
+modify LD_LIBRARY_PATH, DYLD_LIBRARY_PATH or PATH according to your
+operating system.  Alternatively if your system supports it RPATH can
+be specified at configure time.  For example:
+
+    ./configure --with-htslib=/usr/local LDFLAGS=-Wl,-R/usr/local/lib
+
+This use of LDFLAGS may also be useful when using a sibling ../htslib
+directory.
+
