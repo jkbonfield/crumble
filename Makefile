@@ -11,7 +11,18 @@ LIBS=-lhts -lpthread -lz -lm -ldl
 # These have no include or lib suffixes as we are using the source tree.
 # (This needs to have been compiled first.)
 CPPFLAGS=-I../htslib
+
+ifeq ($(OS),Windows_NT)
+    uOS := Windows
+else
+    uOS := $(shell sh -c 'uname -s 2>/dev/null')
+endif
+
+ifeq ($(uOS),Linux)
 LDFLAGS=-L../htslib -Wl,--rpath,../htslib
+else
+LDFLAGS=-L../htslib
+endif
 
 # To compile against an installed (non-source) htslib, use e.g.
 # make CPPFLAGS="-I/usr/local/htslib/include" LDFLAGS="-L/usr/local/htslib/lib -Wl,--rpath,/usr/local/htslib/lib"
