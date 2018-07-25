@@ -17,7 +17,10 @@ To control the output format use -O FMT.  This may also be used to add
 additional parameters.  Eg "-O bam,nthreads=8" may be used to enable
 multi-threaded BGZF compression when writing the BAM file.
 
-A paper preprint is available with comprehensive benchmarks.
+A paper is available with comprehensive benchmarks:
 
-https://www.biorxiv.org/content/early/2018/01/04/243030
+http://dx.doi.org/10.1093/bioinformatics/bty608
 
+Independent benchmarks are also available in a DNAnexus blog post:
+
+https://blog.dnanexus.com/2018-07-23-breaking-down-crumble/
