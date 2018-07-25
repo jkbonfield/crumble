@@ -1877,6 +1877,10 @@ int parse_aux_list(auxhash_t *h, char *optarg) {
 }
 
 void usage(FILE *fp) {
+    if (fp == stderr) {
+	fprintf(fp, "\nSee \"crumble -h\" for usage.\n");
+	return;
+    }
     fprintf(fp, "Crumble version %s\n\n", CRUMBLE_VERSION);
     fprintf(fp, "Usage: crumble [options] in-file out-file\n");
     fprintf(fp, "\nOptions:\n"
@@ -2260,7 +2264,7 @@ int main(int argc, char **argv) {
 
 	case 'h':
 	    usage(stdout);
-	    return 1;
+	    return 0;
 
 	default: /* ? */
 	    usage(stderr);
@@ -2308,8 +2312,18 @@ int main(int argc, char **argv) {
 
     char *fnin = NULL;
     if ( optind>=argc ) {
-        if ( !isatty(STDIN_FILENO) ) fnin = "-";  // reading from stdin
-        else { usage(stdout); return 1; }
+        if ( !isatty(STDIN_FILENO) ) {
+	    fnin = "-";  // reading from stdin
+	} else {
+	    if (argc != 1) {
+		fprintf(stderr, "Missing input filename.\n");
+		usage(stderr);
+		return 1;
+	    } else {
+		usage(stdout);
+		return 0;
+	    }
+	}
     }
     else fnin = argv[optind++];
 
