@@ -48,7 +48,7 @@
 
 //#define DEBUG
 
-#define CRUMBLE_VERSION "0.8.1"
+#define CRUMBLE_VERSION "0.8.2"
 
 /*
  * Prunes quality based on snp calling score.
