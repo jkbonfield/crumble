@@ -1799,7 +1799,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 
 	// Flush history (preserving sort order), periodically only.
 	if (last_flush_before != left_most
-	    && flush_bam_list(&cd, p, b_hist, tid, left_most, out, header) < 0)
+	    && flush_bam_list(&cd, p, b_hist, tid+1, left_most, out, header) < 0)
 	    return -1;
 
 	last_flush_before = left_most;
