@@ -23,7 +23,7 @@
 # DEALINGS IN THE SOFTWARE.
 
 dnl Process this file with autoconf to produce a configure script
-AC_INIT([Crumble], 0.8.2)
+AC_INIT([Crumble], 0.8.3)
 AC_PREREQ([2.63])  dnl This version introduced 4-argument AC_CHECK_HEADER
 
 AM_INIT_AUTOMAKE
