@@ -200,6 +200,17 @@ Short hand for \fB-p8 -Q70 -D125 -X1.5 -M1   -Z1   -V0   -P999 -s0.0,0
 
 .PP
 .TP
+\fB-a\fR, \fB-A\fR
+Adjust sequence mismatching basecalls to match the consensus, when we
+confident they are incorrect.  This is only done if the consensus is
+homozygous.  By default we only change qualities, but this is
+analogous to sequence error correction.
+
+With \fB-a\fR the confidence value of the adjusted base call is set to
+\fIqual_lower\fR.  With \fB-A\fR \fIqual_upper\fR is used instead.
+
+.PP
+.TP
 \fB-b\fR \fIout.bed\fR
 Writes out a bed file containing regions that trigger the various
 heuristics that \fBcrumble\fI uses to preserve quality values.

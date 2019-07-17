@@ -183,6 +183,8 @@ typedef struct {
     char  *bed_fn;
     bed_reg *bed;
     int    nbed;
+    int    correct_errs;
+    int    correct_err_qual;
 
     // Standard gap5 algorithm
     int    min_qual_A;
@@ -1738,6 +1740,13 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 			*qual = bin2[*qual];
 		    else
 			*qual = p->qlow;
+
+#define bam_set_seqi(s,i,b) ((s)[(i)>>1] = ((s)[(i)>>1] & (0xf0 >> ((~(i)&1)<<2))) | ((b)<<((~(i)&1)<<2)))
+		    if (p->correct_errs && call1 == call2) {
+			bam_set_seqi(bam_get_seq(b2), plp[i].qpos, call1);
+			if (p->correct_err_qual)
+			    *qual = p->qhigh;
+		    }
 		}
 	    }
 	}
@@ -1920,6 +1929,9 @@ void usage(FILE *fp) {
     fprintf(fp, "-X float          Minimum discrepancy score [%.1f]\n", MIN_DISCREP_B);
     fprintf(fp, "\n(Horizontal quality smoothing via P-block)\n");
     fprintf(fp, "-p int            P-block algorithm; quality values +/- 'int' [0]\n");
+    fprintf(fp, "\n(Sequence error correction options)\n");
+    fprintf(fp, "-a                Fix base calls if deemed incorrect\n");
+    fprintf(fp, "-A                Also fix qualities of erroneous bases, implies -a\n");
     fprintf(fp, "\n(BD and BI aux tag binary-binning; off by default)\n");
     fprintf(fp, "-f qual_cutoff    Quantise BD:Z: tags to two values (or one if both equal).\n");
     fprintf(fp, "-g qual_upper       If >= 'qual_cutoff' [0] replace by 'qual_upper' [0]\n");
@@ -1998,14 +2010,16 @@ int main(int argc, char **argv) {
 	.softclip      = 0,                 // -S
 	.noPG          = 0,                 // -z
 	.bed           = NULL,              // -R
+	.correct_errs  = 0,                 // -a
+	.correct_err_qual = 0,              // -A
     };
 
-    //  ........  ..  ....... . .
+    // .........  ..  ....... . .
     // abcdefghijklmnopqrstuvwxyz
-    //  ...... .  .. ... .. . . .
+    // ....... .  .. ... .. . . .
     // ABCDEFGHIJKLMNOPQRSTUVWXYZ
 
-    while ((opt = getopt(argc, argv, "I:O:q:d:x:Q:D:X:m:l:u:c:i:L:Bs:t:T:hr:b:vC:M:Z:P:V:p:e:f:g:E:F:G:S135789zR:")) != -1) {
+    while ((opt = getopt(argc, argv, "I:O:q:d:x:Q:D:X:m:l:u:c:i:L:Bs:t:T:hr:b:vC:M:Z:P:V:p:e:f:g:E:F:G:S135789zR:aA")) != -1) {
 	switch (opt) {
 	case 'I':
 	    hts_parse_format(&in_fmt, optarg);
@@ -2144,6 +2158,13 @@ int main(int argc, char **argv) {
 
 	case 'G':
 	    params.BI_high = atoi(optarg)+33;
+	    break;
+
+	case 'A':
+	    params.correct_err_qual = 1;
+	    // Deliberately flow through
+	case 'a':
+	    params.correct_errs = 1;
 	    break;
 
 	case '9':
