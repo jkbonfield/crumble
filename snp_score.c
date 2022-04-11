@@ -482,7 +482,7 @@ static inline double fast_exp(double y) {
 }
 
 /*Taylor (deg 3) implementation of the log: http://www.flipcode.com/cgi-bin/fcarticles.cgi?show=63828*/
-inline double fast_log2 (double val)
+static inline double fast_log2 (double val)
 {
    register int64_t *const     exp_ptr = ((int64_t*)&val);
    register int64_t            x = *exp_ptr;
@@ -496,7 +496,7 @@ inline double fast_log2 (double val)
    return val + log_2;
 }
 
-inline double fast_log (double val) {
+static inline double fast_log (double val) {
     return fast_log2(val)*0.69314718;
 }
 
@@ -568,6 +568,10 @@ int calculate_consensus_pileup(int flags,
 	    continue;
 
 	bam1_t *b = p[n].b;
+
+	if (!b->core.l_qseq)
+	    continue;
+
 	uint8_t base = bam_seqi(bam_get_seq(b), p[n].qpos);
 	uint8_t qual = bam_get_qual(b)[p[n].qpos];
 	const int stech = STECH_SOLEXA;
@@ -1685,6 +1689,9 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 			bam_get_qual(b2)[x] |= 0x80;
 		}
 	    }
+
+	    if (!b->core.l_qseq)
+		continue;
 
 	    qual = &bam_get_qual(b2)[plp[i].qpos];
 	    base = bam_seqi(bam_get_seq(b), plp[i].qpos);
