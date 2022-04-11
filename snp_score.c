@@ -89,6 +89,7 @@
 #define QL 5
 #define QM 25 // below => QL, else QH
 #define QH 40
+#define QCAP 60 // useful in PacBio CCS
 
 // If mapping qual <= MIN_MQUAL we preserve all quality values.
 #define MIN_MQUAL 0
@@ -96,6 +97,9 @@
 // Whether to allow quality reduction on mismatching bases (ie QL)
 #define REDUCE_QUAL 1
 #define BINARY_QUAL 0
+
+// Fraction of reads with an indel before we attempt STR scoring
+#define INDEL_FRACT 0.
 
 // Standard gap5 algorithm; set MIN_QUAL_A to 0 to disable
 #define MIN_QUAL_A 0
@@ -177,12 +181,13 @@ typedef struct {
     int    reduce_qual, binary_qual;
     int    iSTR_add,  sSTR_add;
     double iSTR_mul, sSTR_mul;
-    int    qlow, qcutoff, qhigh;
+    int    qlow, qcutoff, qhigh, qcap;
     int    min_mqual;
     char  *region;
     char  *bed_fn;
     bed_reg *bed;
     int    nbed;
+    double indel_fract;
 
     // Standard gap5 algorithm
     int    min_qual_A;
@@ -762,7 +767,7 @@ int calculate_consensus_pileup(int flags,
 // All blocks of qualities within +/- level get replaced by a representative
 // value such that the delta is within 'level'.
 // The original paper had a more complex method, but this is just (min+max)/2.
-void pblock(bam1_t *b, int level) {
+void pblock(bam1_t *b, int level, int qcap) {
     if (!b)
 	return;
 
@@ -779,6 +784,8 @@ void pblock(bam1_t *b, int level) {
 	    qmax = qual[i];
 	if (qmax - qmin > level) {
 	    mid = (last_qmin + last_qmax) / 2;
+	    if (mid > qcap)
+		mid = qcap;
 	    memset(qual+j, mid, i-j);
 	    qmin = qmax = qual[i];
 	    j = i;
@@ -1054,7 +1061,7 @@ int flush_bam_list(pileup_cd *cd, cram_lossy_params *p, bam_sorted_list *bl,
 	}
 	cd->count_out++;
 	if (p->pblock && !(bi->b->core.flag & (1<<15)))
-	    pblock(bi->b, p->pblock);
+	    pblock(bi->b, p->pblock, p->qcap);
 	bi->b->core.flag &= ~(1<<15);
 	if (sam_write1(out, header, bi->b) < 0)
 	    return -1;
@@ -1263,6 +1270,24 @@ static char *tid_name(bam_hdr_t *h, int tid) {
     return h->target_name[tid];
 }
 
+// Cap the quality to a maximum value.
+// This is done for all data, regardless of whether we "keep" it as-is or not.
+// It's also done right at the start, so it is applied before computing
+// the consensus.
+// We have an explicit exception however for qual 93 as it may have
+// a special meaning to some tools.  It doesn't cause much file size
+// bloat as when present it's already dominant.
+static int max_quality = QCAP;
+int cap_quality(void *data, const bam1_t *b, bam_pileup_cd *cd) {
+    int i;
+    uint8_t *qual = (uint8_t *)bam_get_qual(b);
+    for (i = 0; i < b->core.l_qseq; i++) {
+	if (qual[i] > max_quality /* && qual[i] != 93 */)
+	    qual[i] = max_quality;
+    }
+}
+
+
 // FIXME: this needs breaking down; it's become far too bloated
 int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	      bam_hdr_t *header, hts_itr_t *h_iter) {
@@ -1286,6 +1311,8 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
     cd.count_out = 0;
 
     p_iter = bam_plp_init(pileup_callback, &cd);
+    max_quality = p->qcap; // global var so it's accessable by cap_quality
+    bam_plp_constructor(p_iter, cap_quality);
     bam_plp_set_maxcnt(p_iter, INT_MAX);
     int min_pos = INT_MAX, max_pos = 0;
     int min_pos2 = INT_MAX, max_pos2 = 0;
@@ -1494,10 +1521,11 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	// Check average mapping quality.
 	int had_indel = 0, had_indel_Q = 0;
 	int low_mq_count = 0, keep_qual = 0;
+	int indel_cnt = 0;
 	for (i = 0; i < n_plp; i++) {
 	    low_mq_count += (plp[i].b->core.qual <= p->min_mqual);
 	    if (plp[i].indel || plp[i].is_del)
-		had_indel = 1;
+		had_indel = 1, indel_cnt++;
 	}
 
 	keep_qual = low_mq_count > p->low_mqual_perc * (n_plp + .01);
@@ -1553,6 +1581,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	    if ((is_indel || (str_snp && preserve))
 		&& ((p->min_qual_A && sA < p->min_indel_A) ||
 		    (p->min_qual_B && sB < p->min_indel_B))) {
+// or here?	&& indel_cnt >= n_plp*p->indel_fract) {
 
 		if (is_indel) had_indel_Q++;
 
@@ -1563,13 +1592,15 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 		    indel = 1;
 		}
 
-		if (mask_LC_regions(p, is_indel, plp[i].b, pos,
-				    plp[i].qpos+1, &min_pos, &max_pos) < 0)
-		    return -1;
-		if (mask_LC_regions(p, is_indel, plp[i].b, pos+indel,
-				    plp[i].qpos+1, &min_pos, &max_pos) < 0)
-		    return -1;
+		if (indel_cnt >= n_plp*p->indel_fract) {
+		    if (mask_LC_regions(p, is_indel, plp[i].b, pos,
+					plp[i].qpos+1, &min_pos, &max_pos) < 0)
+			return -1;
+		    if (mask_LC_regions(p, is_indel, plp[i].b, pos+indel,
+					plp[i].qpos+1, &min_pos, &max_pos) < 0)
+			return -1;
 
+		}
 		if (min_pos > pos) min_pos = pos;
 		if (max_pos < pos) max_pos = pos;
 
@@ -1832,7 +1863,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	    purge_tags(p, cd.b_unmap);
 	    cd.count_out++;
 	    if (p->pblock)
-		pblock(cd.b_unmap, p->pblock);
+		pblock(cd.b_unmap, p->pblock, p->qcap);
 	    if (sam_write1(out, header, cd.b_unmap) < 0)
 		return -1;
 	    next = (cd.iter
@@ -1900,6 +1931,7 @@ void usage(FILE *fp) {
 "-l qual_lower         'qual_cutoff' [%d] are quantised to 'qual_lower' [%d]\n"
 "-u qual_upper         and 'qual_upper' [%d] based on agreement to consensus.\n",
 	    QM, QL, QH);
+    fprintf(fp, "-U qual_max       The maximum quality cap used in all bases (even if kept [%d])\n", QCAP);
     fprintf(fp, "-S                Quantise qualities (with -[clu] options) in soft-clips too.\n");
     fprintf(fp, "-m min_mqual      Keep qualities for seqs with mapping quality <= mqual [%d].\n", MIN_MQUAL);
     fprintf(fp, "-L bool           Whether mismatching bases can have qualities lowered [%d]\n", REDUCE_QUAL);
@@ -1911,7 +1943,8 @@ void usage(FILE *fp) {
     fprintf(fp, "-t tag_list       Comma separated list of aux tags to keep []\n");
     fprintf(fp, "-T tag_list       Comma separated list of aux tags to discard []\n");
     fprintf(fp, "-b out.bed        Output suspicious regions to out.bed []\n");
-    fprintf(fp, "-P float          Keep qual if depth locally >= [%.1f] times deeper than expected\n", OVER_DEPTH);
+    fprintf(fp, "-P float          Keep qual if local depth >= [%.1f] times deeper than expected\n", OVER_DEPTH);
+    fprintf(fp, "-Y float          Fraction of reads with indel to trigger STR analysis [%.2f]\n", INDEL_FRACT);
     fprintf(fp, "\n(Preserving whole read qualities; values are fractions of read coverage)\n");
     fprintf(fp, "-C float          Keep if >= [%.2f] reads have soft-clipping\n", CLIP_PERC);
     fprintf(fp, "-M float          Keep if >= [%.2f] reads have low mapping quality\n", LOW_MQUAL_PERC);
@@ -1934,7 +1967,13 @@ void usage(FILE *fp) {
     fprintf(fp, "-F qual_cutoff    Quantise BI:Z: tags to two values (or one if both equal).\n");
     fprintf(fp, "-G qual_upper       If >= 'qual_cutoff' [0] replace by 'qual_upper' [0]\n");
     fprintf(fp, "-E qual_lower       otherwise replace by 'qual_lower' [0].\n");
-    fprintf(fp, "\n(Standard compression levels combining the above.)\n");
+
+    fprintf(fp, "-y machine          Standard options application to machine type:\n");
+    fprintf(fp, "                    Machine types are limited now to:\n");
+    fprintf(fp, "    illumina        [NOP: use default parameters]\n");
+    fprintf(fp, "    pbccs           -u50 -U50 -Y0.1 -p16\n");
+
+    fprintf(fp, "\n(Standard compression levels combining the above. Use as 1st option)\n");
     fprintf(fp, "-1,-3,-5,-7,-8,-9 Combination of options for compression level.\n");
     fprintf(fp, "Level -9 is the default level.  Options used per level are:\n");
     fprintf(fp, "     -1: -p0 -Q75 -D150 -X1  - M0.5 -Z0.1 -V0.5 -P3.0 -s1.0,5 -i2.0,1 -m5\n");
@@ -1978,6 +2017,7 @@ int main(int argc, char **argv) {
 	.qlow          = QL,                // -l
 	.qcutoff       = QM,		    // -c
 	.qhigh         = QH,		    // -u
+	.qcap          = QCAP,              // -U
 	.min_mqual     = MIN_MQUAL,	    // -m
 	.min_qual_A    = MIN_QUAL_A,	    // -q
 	.min_indel_A   = MIN_INDEL_A,	    // -d
@@ -1985,6 +2025,7 @@ int main(int argc, char **argv) {
 	.min_qual_B    = MIN_QUAL_B,	    // -Q
 	.min_indel_B   = MIN_INDEL_B,	    // -D
 	.min_discrep_B = MIN_DISCREP_B,     // -X
+	.indel_fract   = INDEL_FRACT,       // -Y
 	.aux_whitelist = NULL,              // -t
 	.aux_blacklist = NULL,              // -T
 	.region        = NULL,              // -r
@@ -2007,12 +2048,12 @@ int main(int argc, char **argv) {
 	.bed           = NULL,              // -R
     };
 
-    //  ........  ..  ....... . .
+    //  ........  ..  ....... ...
     // abcdefghijklmnopqrstuvwxyz
-    //  ...... .  .. ... .. . . .
+    //  ...... .  .. ........ ...
     // ABCDEFGHIJKLMNOPQRSTUVWXYZ
 
-    while ((opt = getopt(argc, argv, "I:O:q:d:x:Q:D:X:m:l:u:c:i:L:Bs:t:T:hr:b:vC:M:Z:P:V:p:e:f:g:E:F:G:S135789zR:")) != -1) {
+    while ((opt = getopt(argc, argv, "I:O:q:d:x:Q:D:X:m:l:u:U:c:i:L:Bs:t:T:hr:b:vC:M:Z:P:V:p:e:f:g:E:F:G:S135789zR:Y:y:")) != -1) {
 	switch (opt) {
 	case 'I':
 	    hts_parse_format(&in_fmt, optarg);
@@ -2054,6 +2095,10 @@ int main(int argc, char **argv) {
 	    break;
 	case 'c':
 	    params.qcutoff = atoi(optarg);
+	    break;
+
+	case 'U':
+	    params.qcap = atoi(optarg);
 	    break;
 
 	case 'i':
@@ -2119,6 +2164,21 @@ int main(int argc, char **argv) {
 
 	case 'P':
 	    params.over_depth = atof(optarg);
+	    break;
+
+	case 'Y':
+	    params.indel_fract = atof(optarg);
+	    break;
+
+	case 'y':
+	    if (strcasecmp(optarg, "illumina") == 0) {
+	    } else if (strcasecmp(optarg, "pbccs") == 0) {
+		fprintf(stderr, "Using -Y0.1 -u50 -U50 -p16\n");
+		params.indel_fract = 0.1;
+		params.qhigh = 50;
+		params.qcap = 50;
+		params.pblock = 16;
+	    }
 	    break;
 
 	case 'V':

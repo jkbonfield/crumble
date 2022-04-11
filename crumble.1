@@ -48,7 +48,9 @@ that disagree with have their values either decreased (specified by
 \fB-l\fR) or heavily quantised (\fB-l\fR, \fB-c\fR and \fB-u\fR).  In
 all other regions, \fBcrumble\fR either keeps the quality values
 intact or performs a simple smoothing (using the CSAM P-block
-algorithm with level indicated by \fB-p\fR).
+algorithm with level indicated by \fB-p\fR).  A global upper-bound
+quality value can be set using the \fB-U\fR option, which can be used
+to set a cap on excessively high qualities such as seen in PacBio HiFi.
 .PP
 A series of heuristics are employed to further filter high confidence
 consensus bases in case of systematic problems, to prevent seemingly
@@ -108,6 +110,11 @@ as the multiplier and additive values separated with a comma.  For
 example \fB-i1.5,1\fR will make preserve qualities for 50% larger plus
 1 extra bp on either side of the STR.
 
+Platforms with an inherently large indel error rate may wish to use
+the \fB-Y\fR \fIfraction\fR option to restrict the STR assessment to
+columns where the number of reads containing indels are above a given
+threshold.  This can be a significant performance gain on such data.
+
 .TP 4
 .B Per read: excessive depth
 Regions of collapsed repeats or large insertions being aligned to the
@@ -163,6 +170,11 @@ reads overlapping the indel is lower than the amount specified by
 
 .SH OPTIONS
 .PP
+All the compound options such as \fB-1\fR to \fB-9\fR should be
+specified first, followed by instrument options (\fB-y\fR) and then
+other options.  This avoids \fB-9\fR from overwriting any option changes
+already made.
+.PP
 .TP
 \fB-1\fR
 Short hand for \fB-p0 -Q75 -D150 -X1  -M0.5 -Z0.1 -V0.5 -P3.0 -s1.0,5
@@ -200,6 +212,16 @@ Short hand for \fB-p8 -Q70 -D125 -X1.5 -M1   -Z1   -V0   -P999 -s0.0,0
 
 .PP
 .TP
+\fB-Y\fR \fIplatform\fR
+Recommended options for a specific platform.  This option should come
+after any \fB-1\fR to \fB-9\fR option and before others.
+
+The current supported \fIplatform\fR strings are "illumina" which does
+nothing as the defaults are for this instrument, and "pbccs" with the
+latter being equivalent to \fB-Y0.1 -u50 -U50 -p16\fR.
+
+.PP
+.TP
 \fB-b\fR \fIout.bed\fR
 Writes out a bed file containing regions that trigger the various
 heuristics that \fBcrumble\fI uses to preserve quality values.
@@ -231,6 +253,14 @@ of reads have soft-clipping.
 In highly confident regions, quality are quantised into those \fI>=
 qual_cutoff\fR  and those \fI< qual_cutoff\fR, being replaced by
 \fIqual_upper\fR and \fIqual_lower\fR respectively.
+
+.PP
+.TP
+\fB-U\fR \fIqual_cap\fR
+An absolute upper limit on quality values.  This is useful with PacBio
+HiFi data with an unrealistic (and expensive) large range of qualities.
+This is performed right at the start of the Crumble algorithm and
+applies to all data, even those that are otherwise kept intact.
 
 .PP
 .TP
