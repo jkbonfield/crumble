@@ -1187,32 +1187,42 @@ int bam_qpos2rpos(bam1_t *b, int qpos) {
 // into seq b.  This is used to find the extents over which we may wish to
 // preserve scores given something important is going on at apos (typically
 // indel).
+//
+// We limit masking to 250bp either side of the position we're assessing.
+// This is to ensure efficiency when dealing with long read pairs, as we're
+// not caching results between successive calls.
+#define MASK_WIN 250
 int mask_LC_regions(cram_lossy_params *p, int is_indel, bam1_t *b,
 		    int apos, int rpos, int *min_pos, int *max_pos) {
-    int len = b->core.l_qseq;
-    char *seq = malloc(len);
+    char seq[MASK_WIN*2+1];
+    int start = MAX(rpos-MASK_WIN, 0);
+    int end = MIN(rpos+MASK_WIN, b->core.l_qseq);
+    int len = end-start+1;
     int i;
 
     if (!seq)
 	return -1;
 
-    for (i = 0; i < len; i++)
-	seq[i] = seq_nt16_str[bam_seqi(bam_get_seq(b), i)];
+    for (i = start; i <= end; i++)
+	seq[i-start] = seq_nt16_str[bam_seqi(bam_get_seq(b), i)];
 
     rep_ele *reps = find_STR(seq, len, 0), *elt, *tmp;
 
     DL_FOREACH_SAFE(reps, elt, tmp) {
+	//fprintf(stderr, "rpos=%d apos=%d rep=%d..%d\n", rpos, apos, elt->start, elt->end);
 	if (is_indel && 
-	    !(rpos+p->iSTR_add >= elt->start && rpos-p->iSTR_add <= elt->end)) {
-	    //fprintf(stderr, "SKIP rpos %d, apos %d:\t%2d .. %2d %.*s\n",
-	    //	    rpos, apos,
-	    //	    elt->start, elt->end,
-	    //	    elt->end - elt->start+1, &seq[elt->start]);
+	    !(rpos+p->iSTR_add >= elt->start+start &&
+	      rpos-p->iSTR_add <= elt->end  +start)) {
+//	    fprintf(stderr, "SKIP rpos %d, apos %d:\t%2d .. %2d %.*s\n",
+//	    	    rpos, apos,
+//	    	    elt->start+start, elt->end+start,
+//	    	    elt->end - elt->start+1, &seq[elt->start]);
 	    DL_DELETE(reps, elt);
 	    free(elt);
 	    continue;
 	} else if (!is_indel &&
-		   !(rpos+p->sSTR_add >= elt->start && rpos-p->sSTR_add <= elt->end)) {
+		   !(rpos+p->sSTR_add >= elt->start+start &&
+		     rpos-p->sSTR_add <= elt->end  +start)) {
 	    DL_DELETE(reps, elt);
 	    free(elt);
 	    continue;
@@ -1220,11 +1230,11 @@ int mask_LC_regions(cram_lossy_params *p, int is_indel, bam1_t *b,
 	
 	//fprintf(stderr, "%d:\t%2d .. %2d %.*s\n",
 	//	apos,
-	//	elt->start, elt->end,
+	//	elt->start+start, elt->end+start,
 	//	elt->end - elt->start+1, &seq[elt->start]);
 
-	elt->start = bam_qpos2rpos(b, elt->start);
-	elt->end   = bam_qpos2rpos(b, elt->end);
+	elt->start = bam_qpos2rpos(b, elt->start+start);
+	elt->end   = bam_qpos2rpos(b, elt->end+start);
 	if (is_indel) {
 	    if (*min_pos > elt->start)
 		*min_pos = elt->start;
@@ -1239,9 +1249,8 @@ int mask_LC_regions(cram_lossy_params *p, int is_indel, bam1_t *b,
 
 	DL_DELETE(reps, elt);
 	free(elt);
-    }    
+    }
 
-    free(seq);
     return 0;
 }
 
