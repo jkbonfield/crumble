@@ -46,6 +46,11 @@
 // DONE: Trivial implementation is simply length concordance; if there
 // are many different lengths then it's probably suspect.
 
+// TODO: Per type parameters, so one set for SNPs and another set for Indels.
+
+// TODO: Generalised "somatic" option that is like -k(eep) but for any value
+// at or above a specific qual?
+
 //#define DEBUG
 
 #define CRUMBLE_VERSION "0.9.0"
@@ -213,6 +218,7 @@ typedef struct {
     int pblock;
     int softclip;
     int noPG;
+    int perfect_col;
 
     // For BD/BI tag adjustments
     int BD_low, BD_mid, BD_high;
@@ -223,6 +229,7 @@ typedef struct {
 // Binning
 
 static int bin2[256];
+static uint8_t preserve_qual[256] = {0};
 
 void init_bins(cram_lossy_params *p) {
     int i;
@@ -232,6 +239,11 @@ void init_bins(cram_lossy_params *p) {
 	bin2[i] = p->qlow;
     for (; i < 256; i++)
 	bin2[i] = p->qhigh;
+
+    // Except for any explicit values we wish to preserve
+    for (i = 0; i < 256; i++)
+	if (preserve_qual[i] > 1) // really presever
+	    bin2[i] = i;
 }
 
 //-----------------------------------------------------------------------------
@@ -262,6 +274,10 @@ typedef struct {
 
     /* Discrepancy search score */
     float discrep;
+
+    /* Bit field of bases with qualities in the preserve_qual array */
+    /* A=1, C=2, G=4, T=8, *=16, N=32 */
+    int call_preserve;
 } consensus_t;
 
 #define P_HET 1e-6
@@ -568,6 +584,7 @@ int calculate_consensus_pileup(int flags,
     // FIXME: also seed with unknown alleles so low coverage data is
     // less confident.
 
+    cons->call_preserve = 0;
     for (n = 0; n < np; n++) {
 	if (p[n].is_refskip)
 	    continue;
@@ -578,7 +595,8 @@ int calculate_consensus_pileup(int flags,
 	    continue;
 
 	uint8_t base = bam_seqi(bam_get_seq(b), p[n].qpos);
-	uint8_t qual = bam_get_qual(b)[p[n].qpos];
+	uint8_t *qptr = &bam_get_qual(b)[p[n].qpos];
+	uint8_t qual = *qptr;
 	const int stech = STECH_SOLEXA;
 
 	// =ACM GRSV TWYH KDBN
@@ -589,6 +607,20 @@ int calculate_consensus_pileup(int flags,
 	// convert from sam base to acgt*n order.
 	base = L[base];
 	if (p[n].is_del) base = 4;
+
+	if (preserve_qual[qual])      // basic preservation count
+	    cons->call_preserve |= 1<<base;
+	if (preserve_qual[qual] > 1)  // MUST preserve count
+	    cons->call_preserve |= (1<<base)<<8;
+
+	if (p[n].indel > 0) {
+	    int ins;
+	    for (ins = 0; ins < p[n].indel; ins++)
+		if (preserve_qual[*++qptr])
+		    // Not really a "*", but an indel to a consensus
+		    // which may well be "*" if this is a single indel case.
+		    cons->call_preserve |= 1<<4;
+	}
 
 	double MM, __, _M, qe;
 
@@ -729,6 +761,7 @@ int calculate_consensus_pileup(int flags,
 	    //cons->call_prob1 = norm[call]; // p = 1 - call_prob1
 
 	    cons->het_call = map_het[het_call];
+	    //cons->call_preserve = bit2het[cons->call_preserve & 31];
 	    if (norm[het_call] == 0) norm[het_call] = DBL_MIN;
 	    ph = TENLOG2OVERLOG10 * (fast_log2(S[het_call]) - fast_log2(norm[het_call])) + .5;
 
@@ -782,11 +815,13 @@ void pblock(bam1_t *b, int level, int qcap) {
 	    qmin = qual[i];
 	if (qmax < qual[i])
 	    qmax = qual[i];
-	if (qmax - qmin > level) {
+	if (qmax - qmin > level || preserve_qual[qual[i]]) {
 	    mid = (last_qmin + last_qmax) / 2;
 	    if (mid > qcap)
 		mid = qcap;
 	    memset(qual+j, mid, i-j);
+	    while (i < len && preserve_qual[qual[i]])
+		i++;
 	    qmin = qmax = qual[i];
 	    j = i;
 	}
@@ -1291,7 +1326,7 @@ int cap_quality(void *data, const bam1_t *b, bam_pileup_cd *cd) {
     int i;
     uint8_t *qual = (uint8_t *)bam_get_qual(b);
     for (i = 0; i < b->core.l_qseq; i++) {
-	if (qual[i] > max_quality /* && qual[i] != 93 */)
+	if (qual[i] > max_quality && !preserve_qual[qual[i]])
 	    qual[i] = max_quality;
     }
 }
@@ -1310,6 +1345,76 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
     int str_snp = (p->sSTR_add || p->sSTR_mul);
     int counter = 0;
     int bed_idx = 0;
+
+    // Map base bit-map ACGT* to map_het value
+    static int bit2het[32] = {
+	99,// *TGCA
+	0, // 00001
+	6, // 00010
+	1, // 00011
+	12,// 00100
+	2, // 00101
+	7, // 00110
+	99,// 00111
+	18,// 01000
+	3, // 01001
+	8, // 01010
+	99,// 01011
+	13,// 01100
+	99,// 01101
+	99,// 01110
+	99,// 01111
+	24,// 10000
+	4, // 10001
+	9, // 10010
+	99,// 10011
+	99,// 10100
+	99,// 10101
+	99,// 10110
+	99,// 10111
+	99,// 11000
+	99,// 11001
+	99,// 11010
+	99,// 11011
+	99,// 11100
+	99,// 11101
+	99,// 11110
+	99,// 11111
+    };
+    static int bit2call[32] = {
+	99,// *TGCA
+	0, // 00001
+	1, // 00010
+	99,// 00011
+	2, // 00100
+	99,// 00101
+	99,// 00110
+	99,// 00111
+	3, // 01000
+	99,// 01001
+	99,// 01010
+	99,// 01011
+	99,// 01100
+	99,// 01101
+	99,// 01110
+	99,// 01111
+	4, // 10000
+	99,// 10001
+	99,// 10010
+	99,// 10011
+	99,// 10100
+	99,// 10101
+	99,// 10110
+	99,// 10111
+	99,// 11000
+	99,// 11001
+	99,// 11010
+	99,// 11011
+	99,// 11100
+	99,// 11101
+	99,// 11110
+	99,// 11111
+    };
 
     cd.fp = in;
     cd.header = header;
@@ -1330,7 +1435,7 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 
     int last_flush_before = 0;
     while ((plp = bam_plp_auto(p_iter, &tid, &pos, &n_plp))) {
-	int i, preserve = 0, indel = 0;
+	int i, preserve = 0, indel = 0, perfect = 1;
 	unsigned char base;
 	int left_most = n_plp ? plp[0].b->core.pos : 0;
 
@@ -1498,6 +1603,9 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	    }
 	    if (cons_g5_A.discrep >= p->min_discrep_A)
 		count_discrep_A++;
+	    if (cons_g5_A.call_preserve != 1<<cons_g5_A.call)
+		// perfect bases differing with cons
+		perfect = 0;
 	}
 	if (p->min_qual_B) {
 	    if (cons_g5_B.het_phred > 0) {
@@ -1519,6 +1627,26 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 	preserve |= ((p->min_qual_A && cons_g5_A.discrep >= p->min_discrep_A) ||
 		     (p->min_qual_B && cons_g5_B.discrep >= p->min_discrep_B));
 
+	// We're not calling it an obvious SNP, and don't feel qualities need
+	// preserving, but it has quality values we're flagged as needing
+	// to keep, so preserve them still.
+	if (p->min_qual_A && !preserve) {
+	    if ((cons_g5_A.het_phred <= 0 &&
+		 bit2call[cons_g5_A.call_preserve&31] != cons_g5_A.call) ||
+		(cons_g5_A.call_preserve >> 8))
+		perfect = 0;
+	}
+
+	if (p->min_qual_B && !preserve) {
+	    if ((cons_g5_B.het_phred <= 0 &&
+		 bit2call[cons_g5_B.call_preserve&31] != cons_g5_B.call) ||
+		(cons_g5_B.call_preserve >> 8))
+		perfect = 0;
+	}
+
+	// Preserving some perfect bases => preserve whole column
+	if (p->perfect_col && !perfect)
+	    preserve = 1;
 #ifdef DEBUG
 	if (preserve) {
 	    printf("*\t");
@@ -1754,7 +1882,9 @@ int transcode(cram_lossy_params *p, samFile *in, samFile *out,
 		*qual = bam_get_qual(b)[plp[i].qpos] | 0x80;
 	    }
 
-	    if (preserve)
+	    if (preserve || preserve_qual[*qual & 0x7f] >= 1+perfect)
+		// preserve==2 if perfect
+		// preserve>=1 if diffs
 		*qual |= 0x80;
 
 	    if (preserve>1)
@@ -1976,8 +2106,11 @@ void usage(FILE *fp) {
     fprintf(fp, "-F qual_cutoff    Quantise BI:Z: tags to two values (or one if both equal).\n");
     fprintf(fp, "-G qual_upper       If >= 'qual_cutoff' [0] replace by 'qual_upper' [0]\n");
     fprintf(fp, "-E qual_lower       otherwise replace by 'qual_lower' [0].\n");
+    fprintf(fp, "-k qual           Preserve quality value if any diffs present\n");
+    fprintf(fp, "-K qual           Preserve quality value regardless of diffs\n");
+    fprintf(fp, "-N                Store entire column when preserved qualities are present\n");
 
-    fprintf(fp, "-y machine          Standard options application to machine type:\n");
+    fprintf(fp, "-y machine        Standard options application to machine type:\n");
     fprintf(fp, "                    Machine types are limited now to:\n");
     fprintf(fp, "    illumina        [NOP: use default parameters]\n");
     fprintf(fp, "    pbccs           -u50 -U50 -Y0.1 -p16\n");
@@ -2055,14 +2188,15 @@ int main(int argc, char **argv) {
 	.softclip      = 0,                 // -S
 	.noPG          = 0,                 // -z
 	.bed           = NULL,              // -R
+	.perfect_col   = 0,                 // -N
     };
 
-    //  ........  ..  ....... ...
+    //  ........ ...  ....... ...
     // abcdefghijklmnopqrstuvwxyz
-    //  ...... .  .. ........ ...
+    //  ...... . ............ ...
     // ABCDEFGHIJKLMNOPQRSTUVWXYZ
 
-    while ((opt = getopt(argc, argv, "I:O:q:d:x:Q:D:X:m:l:u:U:c:i:L:Bs:t:T:hr:b:vC:M:Z:P:V:p:e:f:g:E:F:G:S135789zR:Y:y:")) != -1) {
+    while ((opt = getopt(argc, argv, "I:O:q:d:x:Q:D:X:m:l:u:U:c:i:L:Bs:t:T:hr:b:vC:M:Z:P:V:p:e:f:g:E:F:G:S135789zR:Y:y:k:K:N")) != -1) {
 	switch (opt) {
 	case 'I':
 	    hts_parse_format(&in_fmt, optarg);
@@ -2182,11 +2316,12 @@ int main(int argc, char **argv) {
 	case 'y':
 	    if (strcasecmp(optarg, "illumina") == 0) {
 	    } else if (strcasecmp(optarg, "pbccs") == 0) {
-		fprintf(stderr, "Using -Y0.1 -u50 -U50 -p16\n");
+		fprintf(stderr, "Using -Y0.1 -u50 -U50 -p16 -k93\n");
 		params.indel_fract = 0.1;
 		params.qhigh = 50;
 		params.qcap = 50;
 		params.pblock = 16;
+		preserve_qual[93] = 1;
 	    }
 	    break;
 
@@ -2220,6 +2355,16 @@ int main(int argc, char **argv) {
 
 	case 'G':
 	    params.BI_high = atoi(optarg)+33;
+	    break;
+
+	case 'k':
+	    preserve_qual[MAX(0,MIN(255,atoi(optarg)))] = 1;
+	    break;
+	case 'K':
+	    preserve_qual[MAX(0,MIN(255,atoi(optarg)))] = 2;
+	    break;
+	case 'N':
+	    params.perfect_col = 1;
 	    break;
 
 	case '9':
