@@ -2360,11 +2360,19 @@ int main(int argc, char **argv) {
 	    break;
 
 	case 'k':
-	    preserve_qual[MAX(0,MIN(255,atoi(optarg)))] = 1;
+	case 'K': {
+	    char *endp = optarg;
+	    do {
+		long q1 = strtol(endp, &endp, 10), q2 = q1;
+		if (*endp == '-')
+		    q2 = strtol(endp+1, &endp, 10);
+		do {
+		    preserve_qual[MAX(0,MIN(255,q1))] = 1 + (opt == 'K');
+		} while (++q1 <= q2);
+	    } while (*endp++ == ',');
+
 	    break;
-	case 'K':
-	    preserve_qual[MAX(0,MIN(255,atoi(optarg)))] = 2;
-	    break;
+	}
 	case 'N':
 	    params.perfect_col = 1;
 	    break;

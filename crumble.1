@@ -279,9 +279,9 @@ applies to all data, even those that are otherwise kept intact.
 
 .PP
 .TP
-\fB-k\fR \fIqual\fR
+\fB-k\fR \fIqual_range\fR
 .TQ
-\fB-K\fR \fIqual\fR
+\fB-K\fR \fIqual_range\fR
 .TQ
 \fB-N\fR
 These options mark specific quality values as ones we wish to keep.
@@ -302,6 +302,9 @@ bases for which qualities are retained to include all other bases in
 the same column.  The intention of this is to not over-emphasise high
 quality discrepant bases relative to the agreeing bases, which may
 have been quantised or capped using other options.
+
+The \fIqual_range\fR argument can be a single quality ("93"), a start
+and end range ("90-99"), and also a comma separated list ("0,90-99").
 
 .PP
 .TP
