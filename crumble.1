@@ -116,6 +116,21 @@ columns where the number of reads containing indels are above a given
 threshold.  This can be a significant performance gain on such data.
 
 .TP 4
+.B Per base: presence of "keep" quality values.
+Specific qualities may be marked as ones to keep / preserve using the
+\fB-k\fR and \fB-K\fR options.  If these are present then either those
+specific bases are kept or with \fB-N\fR the entire column is kept.
+
+The difference between \fB-k\fR and \fB-K\fR is whether we preserve
+qualities only when we're not certain of a positive heterozygous call
+or a homozygous call without any discrepant bases (\fB-k\fR) or for
+all occurrences (\fB-K\fR).
+
+The intention of these options are to retain high quality discrepant
+bases and facilitate the possibility of somatic mutation detection.
+This is probably best combined with a lower \fB-X\fR parameter too.
+
+.TP 4
 .B Per read: excessive depth
 Regions of collapsed repeats or large insertions being aligned to the
 next best reference match lead to high depth.  Typically such
@@ -261,6 +276,32 @@ An absolute upper limit on quality values.  This is useful with PacBio
 HiFi data with an unrealistic (and expensive) large range of qualities.
 This is performed right at the start of the Crumble algorithm and
 applies to all data, even those that are otherwise kept intact.
+
+.PP
+.TP
+\fB-k\fR \fIqual\fR
+.TQ
+\fB-K\fR \fIqual\fR
+.TQ
+\fB-N\fR
+These options mark specific quality values as ones we wish to keep.
+The most basic option is \fB-K\fR which preserves all indicated
+quality values.  The purpose is to facilite the possibility of somatic
+variation detection, where the germline call may be an obvious ("no
+mutation"), but we do not wish to quantise any abberant high-quality
+bases.
+
+However this can lead to larger data as most high quality bases match
+the called consensus (either hom or het).  The \fB-k\fR option is a
+more relaxed definition of "keep" where only bases that disagree with
+the most likely call and have the specific quality values are kept,
+along with other "keep" qualities in that same column.
+
+Combined with either option is \fB-N\fR which expands the list of
+bases for which qualities are retained to include all other bases in
+the same column.  The intention of this is to not over-emphasise high
+quality discrepant bases relative to the agreeing bases, which may
+have been quantised or capped using other options.
 
 .PP
 .TP
@@ -559,7 +600,9 @@ qualities inside are smoothed linearly along each read.
 .PP
 \fBCrumble\fR is designed to operate on files containing a single
 sample with a diploid genome of approximately equal allelic frequency.
-It is not appropriate for use on somatic data.
+While there are some options which may improve the use on somatic
+data, notably -k, -N and -X, it is strongly recommended that you
+perform your own evaluation before using Crumble on such data sets.
 
 .SH AUTHOR
 .PP
