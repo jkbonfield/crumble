@@ -2113,7 +2113,7 @@ void usage(FILE *fp) {
     fprintf(fp, "-y machine        Standard options application to machine type:\n");
     fprintf(fp, "                    Machine types are limited now to:\n");
     fprintf(fp, "    illumina        [NOP: use default parameters]\n");
-    fprintf(fp, "    pbccs           -u50 -U50 -Y0.1 -p16\n");
+    fprintf(fp, "    pbccs           -m40 -u60 -X0.8 -Y0.1 -p16 -k93 -N\n");
 
     fprintf(fp, "\n(Standard compression levels combining the above. Use as 1st option)\n");
     fprintf(fp, "-1,-3,-5,-7,-8,-9 Combination of options for compression level.\n");
@@ -2316,11 +2316,13 @@ int main(int argc, char **argv) {
 	case 'y':
 	    if (strcasecmp(optarg, "illumina") == 0) {
 	    } else if (strcasecmp(optarg, "pbccs") == 0) {
-		fprintf(stderr, "Using -Y0.1 -u50 -U50 -p16 -k93\n");
+		fprintf(stderr, "Using -X0.8 -Y0.1 -m40 -u60 -p16 -k93 -N\n");
 		params.indel_fract = 0.1;
-		params.qhigh = 50;
-		params.qcap = 50;
+		params.min_discrep_B = 0.8;
+		params.qcutoff = 40;
+		params.qhigh = 60;
 		params.pblock = 16;
+		params.perfect_col = 1;
 		preserve_qual[93] = 1;
 	    }
 	    break;
